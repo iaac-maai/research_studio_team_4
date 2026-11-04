@@ -1,0 +1,33 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Entornos virtuales / conda ---
+.venv/
+venv/
+env/
+.conda/
+.env
+
+# --- Salidas de entrenamiento / RL ---
+# Logs de TensorBoard y Stable-Baselines3
+runs/
+logs/
+tensorboard/
+*_tensorboard/
+# Checkpoints intermedios (el modelo final cobuild_ppo.zip SÍ se versiona)
+checkpoints/
+
+# --- Videos y renders generados ---
+videos/
+*.mp4
+*.gif
+
+# --- Editor / sistema ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
