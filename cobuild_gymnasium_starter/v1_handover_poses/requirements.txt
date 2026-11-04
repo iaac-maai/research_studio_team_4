@@ -1,0 +1,11 @@
+gymnasium>=1.1,<2
+stable-baselines3>=2.5,<3
+numpy>=1.26
+pandas>=2.1
+tabulate>=0.9        # markdown tables in results/*.md
+matplotlib>=3.8
+pygame>=2.5,<3
+pytest>=8
+# only for the v0 3D viewer in v0_side_preference/:
+# robosuite>=1.5,<2
+# opencv-python>=4.8

@@ -1,5 +1,10 @@
 # Cobuild RL — minimal Gymnasium prototype
 
+> **Legacy (v0).** This is the first prototype: pace + left/right preference only. It is kept so it can still be run
+> (`cd v0_side_preference && python evaluate.py`, including the 3D robosuite viewer). The current model, with physical
+> profiles and a real drywall procedure, is one folder up. See `../docs/MODEL.md` §10 for what was changed and why.
+
+
 **Goal:** Demonstrate a *trainable* worker-profile-informed assistance planner, not a physical robot or a validated construction model.
 
 ## Quick start (Mac / VS Code)
