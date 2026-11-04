@@ -11,6 +11,42 @@ A robot arm assists a drywall installer covering a wall with 4 boards. It can **
 
 ---
 
+## Run it from scratch (anyone, in about 5 minutes, no training needed)
+
+The trained models (`models/`) and the results (`results/`) are in the repository, so you can reproduce the figures and the videos without training. The videos are **not** in the repository (they are generated files), so you create them with the commands below.
+
+```bash
+# 1. Get the code
+git clone https://github.com/iaac-maai/research_studio_team_4.git
+cd research_studio_team_4/cobuild_gymnasium_starter
+
+# 2. Create an environment and install (Python 3.10+; the team uses 3.12)
+python3 -m venv .venv && source .venv/bin/activate                  # Windows: .venv\Scripts\activate
+python -m pip install -r requirements.txt
+
+# 3. Check that everything works (48 tests, ~1 min)
+python -m pytest -q tests
+
+# 4. Rebuild the tables and figures from the saved models -> results/
+python evaluate.py                    # ~5-10 min; add --no-ppo to skip the PPO strategies
+
+# 5. Make the videos -> videos/  (open them with QuickTime, VLC or a browser)
+mkdir -p videos
+python visualize_3d.py --profile low_capacity_short_left --compare --top B_proactive_generic --bottom C_cobuild_rule --video videos/B_vs_Cobuild_low_capacity_short_left.mp4
+python visualize_3d.py --profile short_left --compare --top no_robot --bottom C_cobuild_ppo --video videos/NoRobot_vs_CobuildPPO_short_left.mp4
+python visualize_3d.py --profile expert_tall_right --compare --top B_proactive_generic --bottom C_cobuild_rule --video videos/B_vs_Cobuild_expert_tall_right.mp4
+```
+
+Each video takes about a minute. If a video does not play or the writer fails on your machine, try VLC, and see *Troubleshooting* below.
+
+**Troubleshooting**
+- `No such file or directory`: you are not inside `cobuild_gymnasium_starter/`. Run `pwd` and `cd` into it.
+- `No trained model at models/...`: run `python train.py --timesteps 3000000` (about 10 min per model), or use `python evaluate.py --no-ppo`.
+- The video is created but does not play, or OpenCV cannot open the writer: the code uses the H.264 (`avc1`) codec, which depends on your OpenCV build. Update with `python -m pip install -U opencv-python`, and play the file with VLC.
+- `python visualize_3d.py ... --live` opens a window and was not tested on a display; prefer `--video`.
+
+---
+
 ## Quick start (Mac / VS Code)
 
 The team's conda environment `Research_Studio` (Python 3.12) has everything. Otherwise:
