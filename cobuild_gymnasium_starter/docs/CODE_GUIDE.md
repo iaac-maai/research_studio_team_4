@@ -43,8 +43,11 @@ profiles.py ──► cobuild_env.py ◄── config.py        (the world: work
 | 8 | [plots.py](../plots.py) | ~195 | Figures 1–5 | you want another plot |
 | 9 | [analysis.py](../analysis.py) | ~202 | Trait contribution + sensitivity (figures 6–7) | you want to test another assumption |
 | 10 | [scene3d.py](../scene3d.py), [visualize_3d.py](../visualize_3d.py) | ~299 / ~393 | The 3D scene and the video director | you want to change how it looks |
+| 10b | [geometry.py](../geometry.py) | ~200 | The 2D floor plan (stations, obstacles, robot paths) and the separation rule used by `CobuildDrywallEnv._separation_check` | you move a station, change a radius or the safety distance |
+| 10c | [props.py](../props.py) | ~75 | Rigid-body physics (MuJoCo) for tools that are put down; `tool_holders()` in `visualize_3d.py` decides who holds each tool | a tool floats, or you want something else to fall and settle |
+| 10d | [audit_video.py](../audit_video.py) | ~120 | Frame-by-frame check of the demo videos: no robot part in the worker, no board moving on its own or floating | after any change to the 3D: it must print `TOTAL problem frames: 0` |
 | 11 | [collisions.py](../collisions.py), [audit_3d.py](../audit_3d.py) | ~190 / ~110 | Shape-vs-shape distances in the 3D scene; the audit report; `yield_robot` (the robot gives way) | the 3D shows things passing through each other |
-| 12 | [tests/](../tests/) | ~144 + ~30 | 53 automated tests (`test_env.py`, `test_3d.py`) | always, after changing anything |
+| 12 | [tests/](../tests/) | ~144 + ~30 | 64 automated tests (`test_env.py`, `test_3d.py`, `test_geometry.py`, `test_props.py`) | always, after changing anything |
 
 **Recommended reading order:** `config.py` → `profiles.py` → the docstrings of `ergonomics.py` → `cobuild_env.py` (`reset`, `step`, `_observation`) → `strategies.py` → `evaluate.py`. That covers 90 % of it. You can ignore the 3D at first: it does not affect any result.
 
@@ -125,7 +128,7 @@ The class `CobuildDrywallEnv(gym.Env)`.
 
 **Masks:** `action_masks()` marks inapplicable actions as impossible (for example, holding when no board is ready). Also: there is **only one arm**, so while it holds the board it cannot hand tools.
 
-**Observation:** `_observation()` builds 43 numbers between 0 and 1: task progress, where the board is, robot state, expected ticks until the worker needs something (`time_to`), the profile, and what it implies (whether holding pays off).
+**Observation:** `_observation()` builds 48 numbers between 0 and 1: task progress, where the board is, robot state, expected ticks until the worker needs something (`time_to`), the profile, what it implies (whether holding pays off), and the floor plan (worker position, robot position, distance).
 
 **The `observe_profile` switch:** if `False`, the profile the agent sees is always the generic one. This is how the "PPO without profile" control model is built.
 

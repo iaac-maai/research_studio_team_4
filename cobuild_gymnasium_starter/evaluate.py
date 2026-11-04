@@ -57,6 +57,7 @@ def run_episode(strategy, profile, seed):
         'heavy_minutes': info['heavy_ticks'] * m,
         'overhead_minutes': info['overhead_ticks'] * m,
         'unnecessary_commands': info['unnecessary_commands'],
+        'safety_stops': info['safety_stops'], 'contacts': info['contacts'],
         'robot_exposure_minutes': info['robot_exposure_ticks'] * m,
         'holds': info['holds'], 'boards_brought': info['boards_brought'], 'steadied': info['steadied'],
         'tool_handovers': info['handovers'], 'awkward_handovers': info['awkward_handovers'],
@@ -114,12 +115,13 @@ def summarize(df):
         n_pairs = g[['profile', 'seed']].drop_duplicates().shape[0]
         L += [f'## {title}', '', f'{g.profile.nunique()} workers, {n_pairs} paired runs per strategy.', '',
               '| Strategy | Time (min) | Worker waiting (min) | Interruptions | Strain (pts) | Heavy handling (min) '
-              '| Combined cost (min) | Boards held | Unnecessary cmds |', '|---|---|---|---|---|---|---|---|---|']
+              '| Combined cost (min) | Boards held | Unnecessary cmds | Safety stops | Contacts |', '|---|---|---|---|---|---|---|---|---|---|---|']
         for k in keys:
             s = g[g.strategy == k]
             L.append(f'| {LABELS[k]} | {s.minutes.mean():.1f} | {s.worker_wait_minutes.mean():.2f} | '
                      f'{s.interruptions.mean():.1f} | {s.strain.mean():.0f} | {s.heavy_minutes.mean():.1f} | '
-                     f'{s.cost_minutes.mean():.1f} | {s.holds.mean():.1f} | {s.unnecessary_commands.mean():.2f} |')
+                     f'{s.cost_minutes.mean():.1f} | {s.holds.mean():.1f} | {s.unnecessary_commands.mean():.2f} | '
+                     f'{s.safety_stops.mean():.2f} | {s.contacts.mean():.2f} |')
         L += ['', 'Where does the time go? Mean minutes per wall by activity:', '',
               '| Strategy | ' + ' | '.join(E.CATEGORIES) + ' |', '|---' * (len(E.CATEGORIES) + 1) + '|']
         for k in keys:

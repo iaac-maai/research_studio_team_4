@@ -24,7 +24,7 @@ cd research_studio_team_4/cobuild_gymnasium_starter
 python3 -m venv .venv && source .venv/bin/activate                  # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
 
-# 3. Check that everything works (53 tests, ~1 min)
+# 3. Check that everything works (64 tests, ~1 min)
 python -m pytest -q tests
 
 # 4. Rebuild the tables and figures from the saved models -> results/
@@ -88,14 +88,24 @@ The decisions come from exactly the same `CobuildDrywallEnv` and strategies used
 
 > The earlier 3D viewer (Panda arm, robosuite) belongs to v0 and still lives in `v0_side_preference/`.
 
-**Collisions in the 3D.** The environment has no geometry (movement between stations takes no time), so a collision can only happen in the *drawing*; it does not change any result or any reward. The choreography keeps things apart: the worker walks around the pallet, cart and tool table, stays behind a board they carry, steps aside when the robot brings a board to the cart; the robot gives way (base slides, elbow bends) when it would touch the worker, a board or the set; boards turning upright are lifted so no corner cuts the floor. [audit_3d.py](audit_3d.py) measures what is left, frame by frame, with MuJoCo's shape distances:
+**Collisions and safety.** The environment has a 2D floor plan ([geometry.py](geometry.py)): worker and robot base are circles, the robot drives along paths, and a safety rule (speed-and-separation monitoring) keeps them at least 0.95 m apart and a carried board at least 0.45 m from the worker. A robot that would break the rule stops and re-plans (−2 reward per stopped tick); bodies that really touch cost −20. The rule applies to **every** strategy, the PPO observes the positions, and `evaluate.py` reports `safety_stops` and `contacts`. The video HUD shows both counters. What the floor plan does not know (arm, hands, torso) is only checked in the drawing with [audit_3d.py](audit_3d.py), which measures overlaps between the 3D shapes frame by frame:
 
 ```bash
 python audit_3d.py                                   # 3 personas x 3 strategies, summary table
 python audit_3d.py --profile short_left --strategy C_cobuild_rule --verbose
 ```
 
-Current state: nothing goes through the floor or the set, and the remaining overlaps are brief grazes of at most about 9 cm between the worker and the robot's arm or a carried board. Not zero, and a human-robot safety analysis would need real geometry (see [docs/MODEL.md](docs/MODEL.md) §9).
+**The two rules the videos must respect** are checked frame by frame, on exactly the frames of the three demo videos, by [audit_video.py](audit_video.py):
+
+1. no robot part (base, arm, suction frame, gripper) ever overlaps the worker's body, arms or hands (only a hand touching the gripper to take a tool is allowed);
+2. a board only moves while somebody holds it (the robot's suction frame on it, or both of the worker's hands on it), and a board at rest always lies on something.
+
+```bash
+python audit_video.py              # the 3 videos x 2 panels: "clean" or the problem frames
+python audit_video.py --verbose    # every event with its time in the video (m:ss)
+```
+
+Current result: **0 problem frames** in all six panels. How it is achieved: a board is picked up before it moves and put down before it is let go (robot trips and worker carries are drawn frame by frame from their real path); the robot drives around the pallet, cart and table; it holds a board from the side it comes from while the worker fastens from the other side; the worker steps aside while the robot lifts a board onto the wall; and a last pass (`collisions.separate`) bends the elbow, slides the base or makes the worker step back until nothing overlaps. Small grazes that remain elsewhere (a board corner touching the stack, the forearm brushing a board it holds, up to ~5 cm) are reported by `audit_3d.py`. See [docs/MODEL.md](docs/MODEL.md) §9 for the limits of the safety model.
 
 ## What each file does
 
@@ -111,8 +121,11 @@ Current state: nothing goes through the floor or the set, and the remaining over
 | [plots.py](plots.py) | figures `results/fig1…fig5` |
 | [analysis.py](analysis.py) | trait contribution + sensitivity → `results/analysis.md`, `fig6`, `fig7` |
 | [scene3d.py](scene3d.py), [visualize_3d.py](visualize_3d.py) | the 3D scene (MuJoCo, visual only) and the video/live director |
-| [audit_3d.py](audit_3d.py), [collisions.py](collisions.py) | measure what passes through what in the 3D, and make the robot give way |
-| [tests/](tests/) | 53 automated checks (incl. calibration against Yuan et al.) |
+| [props.py](props.py) | MuJoCo physics for loose objects in the 3D (a released tool falls and rests on the cart) |
+| [geometry.py](geometry.py) | the 2D floor plan: stations, obstacles, robot paths, the separation rule |
+| [audit_video.py](audit_video.py) | frame-by-frame check of the demo videos: robot never in the worker, boards never move alone |
+| [audit_3d.py](audit_3d.py), [collisions.py](collisions.py) | measure what passes through what in the 3D, and make the robot (or the worker) give way |
+| [tests/](tests/) | 64 automated checks (incl. calibration against Yuan et al.) |
 | [v0_side_preference/](v0_side_preference/), [v1_handover_poses/](v1_handover_poses/) | earlier prototypes, kept for reference |
 
 ---
@@ -123,14 +136,16 @@ Seed 42, MaskablePPO 3 M steps per variant. **These are simulated results under 
 
 ### Headline: 100 unseen workers × 5 paired runs (a 4-board wall)
 
-| Strategy | Time (min) | Worker waiting (min) | Strain (pts) | Time carrying the board (min) | Combined cost (min) |
-|---|---|---|---|---|---|
-| 0 · No robot | 21.1 | 0.0 | 126 | 7.8 | 27.4 |
-| A · Reactive | 20.0 | 5.6 | 34 | 0.0 | 21.7 |
-| B · Proactive (average worker) | 15.3 | 1.2 | 52 | 1.5 | 17.9 |
-| **C · Cobuild rule (profile)** | **15.1** | 1.2 | 43 | 1.3 | **17.3** |
-| **C · Cobuild PPO (profile)** | **15.0** | 1.1 | 45 | 1.6 | **17.3** |
-| PPO without profile | 15.8 | 1.2 | 38 | 0.7 | 17.7 |
+| Strategy | Time (min) | Worker waiting (min) | Strain (pts) | Combined cost (min) | Safety stops | Contacts |
+|---|---|---|---|---|---|---|
+| 0 · No robot | 21.1 | 0.0 | 126 | 27.4 | 0.0 | 0.00 |
+| A · Reactive | 20.2 | 5.8 | 34 | 21.9 | 2.0 | 0.00 |
+| B · Proactive (average worker) | 15.5 | 1.4 | 52 | 18.1 | 2.0 | 0.00 |
+| **C · Cobuild rule (profile)** | **15.3** | 1.4 | 43 | **17.5** | 2.4 | 0.04 |
+| **C · Cobuild PPO (profile)** | 15.4 | 1.3 | 42 | **17.5** | 2.0 | 0.00 |
+| PPO without profile | 16.1 | 1.5 | 38 | 18.0 | 2.0 | 0.00 |
+
+With the floor plan and safety rule, the profile still helps: C rule vs B saves 0.15 min and 17 % strain (combined cost −3.3 %); the PPO with the profile vs without saves 0.67 min (combined cost −2.4 %). The two Cobuild strategies tie on combined cost. Contacts are practically zero for every strategy; safety stops (the robot waiting for the worker to pass) are about 2 per wall. One training seed: treat PPO differences of a few tenths of a minute as unconfirmed.
 
 *Combined cost = minutes + 0.05 × strain points: the planners' own trade-off, in minutes.*
 

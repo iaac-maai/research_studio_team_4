@@ -4,7 +4,7 @@ Layout in metres. The wall lies in the plane y = 0 and the room is at y < 0; the
 (+y). Seen from the worker's back, their RIGHT hand is on +x and their LEFT hand on -x.
 
     wall: x 0..4.5, z 0..2.44, 2 columns x 2 rows of boards (the right-hand column is trimmed to 2.06 m)
-    left of the wall: the pallet with the board stack (flat)
+    left of the wall: the board cart (a trestle about 0.7 m high) with the board stack lying flat on it
     right of the wall: the cutting cart (the board stands on it)
     in front: the robot (mobile base + lift column + two-link arm + suction frame) and the worker
 
@@ -22,10 +22,9 @@ import ergonomics as E
 WALL_W, WALL_H = 4.5, C.WALL_TOP_M
 BOARD_H, BOARD_T = 1.22, 0.016
 FULL_W, CUT_W = 2.44, 2.06
-STACK_XY = np.array([-1.7, -2.4])
-CART_XY = np.array([5.3, -1.05])
-STAGE_X, STAGE_Y = -1.35, -0.45
-HOME_XY = np.array([1.0, -3.6])
+from geometry import CART_XY, HOME_XY, STACK_XY, STAGE_X, STAGE_Y      # the floor plan lives in geometry.py
+
+STACK_TOP = 0.7          # boards are delivered on a trestle cart so they can be picked up without bending to the floor
 
 BOARD_RGBA = (0.93, 0.84, 0.62, 1.0)
 VEST_ON, VEST_WAIT = (0.95, 0.55, 0.10, 1.0), (0.85, 0.15, 0.15, 1.0)
@@ -66,6 +65,9 @@ Q_ID = np.array([1.0, 0, 0, 0])
 Q_FLAT = q_axis([1, 0, 0], np.pi / 2)   # board lying flat (thickness along z)
 
 
+TOOL_NAMES = ('K0', 'K1', 'G0', 'G1')
+
+
 def _geom(name, kind, size, rgba, pos=None):
     p = f' pos="{pos[0]} {pos[1]} {pos[2]}"' if pos is not None else ''
     return (f'<geom name="{name}" type="{kind}" size="{" ".join(str(s) for s in size)}" '
@@ -92,7 +94,10 @@ def build_xml(profile):
                             pos=(c[0], 0.012, c[2])))
     static = [
         _geom('floor', 'plane', (12, 8, 0.1), (0.74, 0.73, 0.70, 1), pos=(2.3, -1.5, 0)),
-        _geom('pallet', 'box', (1.3, 0.65, 0.05), (0.55, 0.42, 0.28, 1), pos=(STACK_XY[0], STACK_XY[1], 0.05)),
+        _geom('pallet', 'box', (1.3, 0.65, 0.04), (0.55, 0.42, 0.28, 1), pos=(STACK_XY[0], STACK_XY[1], STACK_TOP - 0.04)),
+        *[_geom(f'pallet_leg{i}', 'box', (0.04, 0.04, (STACK_TOP - 0.08) / 2), DARK,
+                pos=(STACK_XY[0] + sx * 1.2, STACK_XY[1] + sy * 0.55, (STACK_TOP - 0.08) / 2))
+          for i, (sx, sy) in enumerate([(1, 1), (1, -1), (-1, 1), (-1, -1)])],
         _geom('cart_top', 'box', (1.4, 0.12, 0.02), (0.35, 0.36, 0.4, 1), pos=(CART_XY[0], CART_XY[1], 0.1)),
         _geom('cart_leg1', 'box', (0.03, 0.1, 0.05), DARK, pos=(CART_XY[0] - 1.2, CART_XY[1], 0.04)),
         _geom('cart_leg2', 'box', (0.03, 0.1, 0.05), DARK, pos=(CART_XY[0] + 1.2, CART_XY[1], 0.04)),
@@ -119,6 +124,7 @@ def build_xml(profile):
     bodies.append(_mocap('robot_base', [
         _geom('rb_body', 'box', (0.5, 0.32, 0.14), ROBOT_RGBA, pos=(0, 0, 0.22)),
         _geom('rb_column', 'box', (0.07, 0.07, 1.45), DARK, pos=(0, -0.12, 1.55)),
+        _geom('rb_tray', 'box', (0.42, 0.26, 0.012), (0.3, 0.3, 0.32, 1), pos=(0, 0, 0.372)),
         *[_geom(f'rb_wheel{i}', 'cylinder', (0.1, 0.04), DARK, pos=(sx * 0.4, sy * 0.3, 0.1))
           for i, (sx, sy) in enumerate([(1, 1), (1, -1), (-1, 1), (-1, -1)])]]))
     bodies.append(_mocap('carriage', [_geom('carriage_g', 'box', (0.12, 0.12, 0.1), DARK)]))
@@ -129,13 +135,11 @@ def build_xml(profile):
                                            pos=(sx * 0.3, -0.03, sz * 0.1)) for i, (sx, sz) in
                                      enumerate([(1, 1), (1, -1), (-1, 1), (-1, -1)])]]))
     bodies.append(_mocap('gripper', [_geom('gripper_g', 'box', (0.07, 0.05, 0.05), DARK)]))
-    bodies.append(_mocap('tool_cut', [_geom('tc_g', 'box', (0.14, 0.03, 0.03), (0.95, 0.85, 0.1, 1)),
-                                      _geom('tc_tape', 'cylinder', (0.05, 0.02), (0.9, 0.9, 0.9, 1), pos=(0.1, 0, 0.04))]))
-    bodies.append(_mocap('tool_gun', [_geom('tg_g', 'box', (0.1, 0.035, 0.04), (0.75, 0.15, 0.15, 1)),
-                                      _geom('tg_h', 'box', (0.03, 0.03, 0.08), DARK, pos=(-0.04, 0, -0.07))]))
-    bodies.append(_mocap('wtool_cut', [_geom('wtc_g', 'box', (0.14, 0.03, 0.03), (0.95, 0.85, 0.1, 1))]))
-    bodies.append(_mocap('wtool_gun', [_geom('wtg_g', 'box', (0.1, 0.035, 0.04), (0.75, 0.15, 0.15, 1)),
-                                       _geom('wtg_h', 'box', (0.03, 0.03, 0.08), DARK, pos=(-0.04, 0, -0.07))]))
+    for j in (0, 1):                # two cut sets and two screw guns: the robot's and the worker's swap roles
+        bodies.append(_mocap(f'tool_K{j}', [_geom(f'tK{j}_g', 'box', (0.14, 0.03, 0.03), (0.95, 0.85, 0.1, 1)),
+                                           _geom(f'tK{j}_t', 'cylinder', (0.05, 0.02), (0.9, 0.9, 0.9, 1), pos=(0.1, 0, 0.04))]))
+        bodies.append(_mocap(f'tool_G{j}', [_geom(f'tG{j}_g', 'box', (0.1, 0.035, 0.04), (0.75, 0.15, 0.15, 1)),
+                                           _geom(f'tG{j}_h', 'box', (0.03, 0.03, 0.08), DARK, pos=(-0.04, 0, -0.07))]))
     bodies.append(_mocap('marker', [_geom('marker_g', 'sphere', (0.06,), (0.2, 0.8, 0.3, 0.55))]))
     return f'''<mujoco model="cobuild_wall">
   <visual><global offwidth="1600" offheight="900"/><quality shadowsize="2048"/>
@@ -247,7 +251,7 @@ class Scene:
         col = np.array([bx, by, zc]) + f * -0.12 * 0
         S = np.array([bx, by, zc]) + f * 0.0
         self.put('carriage', S)
-        L1, L2 = 0.85, 0.8
+        L1, L2 = 0.95, 0.9
         # keep the arm within reach: pull the target in if needed
         rel = ee - S
         dist = np.linalg.norm(rel)
@@ -257,16 +261,24 @@ class Scene:
         hn = np.linalg.norm(horiz)
         up = np.array([0, 0, 1.0])
         hint = up + np.asarray(r.get('elbow_push', (0.0, 0.0, 0.0)), float)     # bend the elbow away from obstacles
-        elbow, ee = self._elbow(S, ee, L1, L2, hint)
+        ft = float(r.get('frame_t', 1.0))
+        board_ee = ee.copy()
+        if r['kind'] == 'board':     # the forearm ends at the back of the suction frame, not inside the board
+            back = 0.038 + 0.03 + 0.05
+            wrist = ee + np.array([0, -back * ft, back * (1 - ft)])
+            elbow, wrist = self._elbow(S, wrist, L1, L2, hint)
+            ee = board_ee + (wrist - (board_ee + np.array([0, -back * ft, back * (1 - ft)])))   # if out of reach
+        else:
+            elbow, ee = self._elbow(S, ee, L1, L2, hint)
+            wrist = ee
         self.capsule('link1', S, elbow)
-        self.capsule('link2', elbow, ee)
+        self.capsule('link2', elbow, wrist)
         kind = r['kind']
         if kind == 'board':
             # the suction frame follows the board it carries: lying on top of a flat board (frame_t 0) and in front
             # of an upright one (frame_t 1)
-            ft = float(r.get('frame_t', 1.0))
             q = (1 - ft) * Q_FLAT + ft * Q_ID
-            self.put('frame', ee + np.array([0, -0.045 * ft, 0.045 * (1 - ft)]), q / np.linalg.norm(q))
+            self.put('frame', ee + np.array([0, -0.038 * ft, 0.038 * (1 - ft)]), q / np.linalg.norm(q))   # touching the board
             self.hide('gripper')
         else:
             self.hide('frame')
@@ -280,11 +292,13 @@ class Scene:
             self.model.geom_size[self.gid[f'board{b}_g']][:] = (hx, hy, hz)
 
     def tools(self, t):
-        for name in ('tool_cut', 'tool_gun', 'wtool_cut', 'wtool_gun'):
-            if t.get(name) is None:
-                self.hide(name)
+        """t: {name: (pos, quat) or None}, name in TOOL_NAMES."""
+        for name in TOOL_NAMES:
+            v = t.get(name)
+            if v is None:
+                self.hide('tool_' + name)
             else:
-                self.put(name, t[name])
+                self.put('tool_' + name, v[0], v[1])
 
     def marker(self, m):
         if m is None:

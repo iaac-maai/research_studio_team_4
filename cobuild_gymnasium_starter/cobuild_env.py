@@ -24,6 +24,7 @@ from gymnasium import spaces
 
 import config as C
 import ergonomics as E
+import geometry as G
 from profiles import GENERIC, WorkerProfile, sample_population
 
 WAIT, BRING, STEADY, LIFT_HOLD, TOOL0 = 0, 1, 2, 3, 4
@@ -34,7 +35,7 @@ LOCS = ('stack', 'cutstation', 'staged', 'held', 'wall')
 PHASE_IDS = {n: i for i, n in enumerate(['prep', 'stool', 'tools_fetch', 'measure', 'cut', 'haul_stack_wall',
                                           'haul_stack_cut', 'haul_cut_wall', 'place', 'screw_a', 'reload_a',
                                           'screw_b', 'reload_b'])}
-OBS_DIM = 43
+OBS_DIM = 48
 
 
 def plan(b, P):
@@ -93,6 +94,7 @@ class CobuildDrywallEnv(gym.Env):
         # evaluated with the same seed faces exactly the same worker ("common random numbers").
         self.noise = self.np_random.lognormal(0.0, C.DURATION_NOISE_SIGMA, size=(C.N_BOARDS, len(PHASE_IDS)))
         self._begin_board(0)
+        self.worker_pos = G.worker_xy(self)
         if not self._try_start():
             self.interruptions += 1
         return self._observation(), self._info()
@@ -120,6 +122,14 @@ class CobuildDrywallEnv(gym.Env):
         self.activity_ticks = {c: 0 for c in E.CATEGORIES}
         self.last_action, self.last_event = WAIT, 'start'
         self.done = False
+        # --- floor plan (geometry.py): where the worker and the robot base are, and what the safety rule did
+        self.worker_pos = G.station('wall', 0).copy()
+        self.robot_pos = G.HOME_XY.copy()
+        self.robot_wps, self.robot_pick = [self.robot_pos.copy(), self.robot_pos.copy()], None
+        self.safety_stops = self.contacts = self.yields = self.stall_run = 0
+        self.cut_uses = self.gun_handovers = 0       # for the 3D: which tool object is in use
+        self.gun_swap_time = -99
+        self.min_separation = 99.0
 
     # -------------------------------------------------------------- properties
     @property
@@ -151,8 +161,16 @@ class CobuildDrywallEnv(gym.Env):
         reward = C.R_TICK
         strain_before = self.strain
         reward += self._robot_command(action)
-        self._advance_robot()
-        reward += self._advance_worker()
+        stop_r, stop_w, contact = self._separation_check()
+        if stop_r or stop_w:
+            self.safety_stops += 1
+            reward += C.R_SAFETY_STOP
+        if contact:
+            self.contacts += 1
+            reward += C.R_CONTACT
+        if not stop_r:
+            self._advance_robot()
+        reward += self._advance_worker(stalled=stop_w)
         if self.robot_state == 'tool_ready':
             self.exposure += 1
             reward += C.R_EXPOSURE
@@ -162,6 +180,83 @@ class CobuildDrywallEnv(gym.Env):
         if terminated:
             reward += C.R_COMPLETE
         return self._observation(), float(reward), terminated, truncated, self._info()
+
+    # ------------------------------------------------------------- floor plan and safety rule
+    def _robot_go(self, target):
+        """Start moving the robot base to `target` (it takes the ticks of the job), around the worker."""
+        target = np.asarray(target, float)
+        mid = G.route(self.robot_pos, target, self.worker_pos)
+        self.robot_wps = G.clear_path([self.robot_pos.copy()] + ([] if mid is None else [mid]) + [target])
+        self.robot_pick = None
+
+    def _robot_bring(self, src, dest):
+        """Plan a trip: drive to the pickup place, take the board, carry it along the lane to the drop place."""
+        pts = [self.robot_pos.copy()]
+        sp = G.spot_for_board(src)
+        if np.linalg.norm(sp - pts[0]) > 0.05:
+            pts = G.clear_path(pts + [sp])
+        self.robot_pick = len(pts) - 1
+        end = G.spot_hold(self.job['board']) if dest == 'wall' else G.spot_for_board(dest)
+        self.robot_wps = pts + G.clear_path([pts[-1]] + G.carry_lane(src, dest) + [end])[1:]
+
+    def _replan(self, pos, w):
+        """Continue the current trip from `pos`, around a worker standing at `w`."""
+        d, total = G.cumulative(self.robot_wps)
+        t = G.robot_progress(self)
+        keep = [i for i in range(len(self.robot_wps)) if d[i] / total > t + 1e-9]
+        rest = [self.robot_wps[i] for i in keep]
+        pick = None
+        if self.robot_pick is not None:
+            fp = d[self.robot_pick] / total
+            if t >= fp - 1e-9:
+                pick = 0                                   # already carrying: the board rides from the new start
+            elif self.robot_pick not in keep:
+                keep.append(self.robot_pick)
+                keep.sort()
+        rest = [self.robot_wps[i] for i in keep] or [self.robot_wps[-1]]
+        mid = G.route(pos, rest[0], w)
+        head = G.clear_path([np.asarray(pos, float).copy()] + ([] if mid is None else [mid]) + rest[:1])
+        self.robot_wps = head + rest[1:]
+        if pick is None and self.robot_pick is not None:
+            pick = len(head) - 1 + keep.index(self.robot_pick)
+        self.robot_pick = pick
+        self.robot_total = max(self.robot_ticks, 1)
+
+    def _separation_check(self):
+        """Speed-and-separation monitoring (like ISO/TS 15066): the robot base and the worker must never come
+        closer than G.ZONE. Looks at where both will be at the end of this tick.
+          - a moving robot that would enter the zone STOPS this tick (stop_r);
+          - a parked robot in the way of a walking worker makes the WORKER wait (stop_w);
+          - a free robot simply backs away (no penalty);
+          - after G.MAX_STALL_TICKS stopped ticks in a row, the bodies touch: a CONTACT.
+        Returns (stop_r, stop_w, contact). Updates worker_pos / robot_pos."""
+        w0, r0 = self.worker_pos, self.robot_pos
+        w1, r1 = G.worker_xy(self, 1), G.robot_xy(self, 1)
+        moving = self.robot_state in G.MOVING
+        stop_r = stop_w = contact = False
+        c0, c1 = G.carry_offset_now(self), G.carry_offset_now(self, 1)
+        if c0 is None:                      # the board is picked up during this tick: guard it from the start
+            c0 = c1
+        half_w = G.board_width(self.job['board']) / 2 if c0 is not None else 0.0
+        if G.separation_violated(w0, w1, r0, r1, c0, c1, half_w):
+            if self.stall_run >= G.MAX_STALL_TICKS:
+                contact = True                                  # it has been blocked too long: they touch
+            else:
+                if moving:
+                    stop_r, r1 = True, r0
+                    self._replan(r0, w1)            # drive around the worker for the rest of the trip
+                if G.separation_violated(w0, w1, r0, r1, c0, c0, half_w):
+                    if self.robot_state in ('holding', 'steadying', 'tool_ready'):
+                        stop_w, w1 = True, w0                   # the robot is busy with a task: the worker waits
+                    else:                                       # otherwise the robot backs away from the worker
+                        r1 = G.away_from_path(r0, w0, w1, G.ZONE + 0.15)   # step out of the worker's way
+                        self.yields += 1
+                        if moving:                              # continue the trip from the new place
+                            self._replan(r1, w1)
+        self.stall_run = self.stall_run + 1 if (stop_r or stop_w) else 0
+        self.min_separation = min(self.min_separation, float(np.linalg.norm(w1 - r1)))
+        self.worker_pos, self.robot_pos = np.asarray(w1, float), np.asarray(r1, float)
+        return stop_r, stop_w, contact
 
     # ---------------------------------------------------------- what the robot can do now
     def bring_target(self):
@@ -223,9 +318,10 @@ class CobuildDrywallEnv(gym.Env):
                 self.unnecessary += 1
                 return C.R_UNNECESSARY
             i, dest = tgt
-            self.job = {'board': i, 'dest': dest}
+            self.job = {'board': i, 'dest': dest, 'src': self.boards[i]['loc']}
             self.robot_state, self.robot_ticks = 'bringing', C.BRING_TICKS[(self.boards[i]['loc'], dest)]
             self.robot_total = self.robot_ticks
+            self._robot_bring(self.boards[i]['loc'], dest)
             self.brought += 1
             self.last_event = f'robot brings board {i + 1} to the {dest}'
         elif action == STEADY:
@@ -235,6 +331,7 @@ class CobuildDrywallEnv(gym.Env):
             self.robot_state, self.robot_ticks = 'positioning_steady', C.STEADY_SETUP_TICKS
             self.robot_total = self.robot_ticks
             self.job = {'board': self.board}
+            self._robot_go(G.spot_steady())
             self.steadied += 1
             self.last_event = 'robot steadies the board at the cut station'
         elif action == LIFT_HOLD:
@@ -243,7 +340,8 @@ class CobuildDrywallEnv(gym.Env):
                 return C.R_UNNECESSARY
             self.robot_state, self.robot_ticks = 'positioning_hold', C.LIFT_HOLD_SETUP_TICKS
             self.robot_total = self.robot_ticks
-            self.job = {'board': self.board}
+            self.job = {'board': self.board, 'src': 'staged', 'dest': 'wall'}
+            self._robot_bring('staged', 'wall')        # drive to the staged board, take it, lift it onto the studs
             self.holds += 1
             self.last_event = f'robot lifts board {self.board + 1} onto the studs'
         else:
@@ -255,6 +353,7 @@ class CobuildDrywallEnv(gym.Env):
             self.robot_state = 'fetching_tool'
             self.robot_ticks = C.FETCH_TOOL_TICKS + E.approach_ticks(self.robot_pose)
             self.robot_total = self.robot_ticks
+            self._robot_go(G.spot_handover(self.worker_pos, self.robot_pose))
             self.last_event = f'robot fetches the {item.replace("_", " ")}'
         return 0.0
 
@@ -287,7 +386,11 @@ class CobuildDrywallEnv(gym.Env):
         self.queue = plan(b, self.profile)
         self.asked.clear()
 
-    def _advance_worker(self):
+    def _advance_worker(self, stalled=False):
+        if stalled:                       # held back by the safety rule: standing still counts as waiting
+            self.wait_ticks += 1
+            self.activity_ticks['waiting'] += 1
+            return C.R_WORKER_WAIT
         if self.worker_state in ('waiting', 'requesting'):
             self.wait_ticks += 1
             self.activity_ticks['waiting'] += 1
@@ -317,9 +420,10 @@ class CobuildDrywallEnv(gym.Env):
             bd['cut_done'] = True
             if self.robot_state == 'steadying':
                 # the robot already has the board in its grasp: it carries it to the wall
-                self.job = {'board': self.board, 'dest': 'staged'}
+                self.job = {'board': self.board, 'dest': 'staged', 'src': 'cutstation'}
                 self.robot_state, self.robot_ticks = 'bringing', C.BRING_TICKS[('cutstation', 'staged')]
                 self.robot_total = self.robot_ticks
+                self._robot_bring('cutstation', 'staged')
                 self.brought += 1
                 self.last_event = 'robot carries the cut board to the wall'
             elif self.robot_state == 'positioning_steady':
@@ -358,6 +462,7 @@ class CobuildDrywallEnv(gym.Env):
             _, ticks, strain, mode = res
             name = self.queue.pop(0)
             self.phase, self.phase_mode = name, mode
+            self.cut_uses += name == 'measure'
             self.remaining, self.elapsed, self.worker_state, self.request = ticks, 0, 'working', None
             self.phase_total = ticks
             self.strain += strain
@@ -382,6 +487,9 @@ class CobuildDrywallEnv(gym.Env):
         if self.robot_state == 'tool_ready' and self.robot_item == item:
             x_t, x_s, d = E.handover_cost(self.profile, self.robot_pose)
             self.handovers += 1
+            if item == 'gun':
+                self.gun_handovers += 1
+                self.gun_swap_time = self.time
             self.wrong_side += d['wrong_side']
             self.awkward += int(E.is_awkward(x_t, x_s))
             self._release_robot()
@@ -494,6 +602,9 @@ class CobuildDrywallEnv(gym.Env):
             (P.height_m - 1.5) / 0.5, (P.reach_m - 0.5) / 0.3, (P.lift_capacity_kg - 15.0) / 40.0,
             (P.pace - 0.7) / 0.7, float(P.side), P.fatigue_rate / 0.002,
             E.load_ratio(P, b) / 2.0, float(E.hold_is_worth_it(P, b)),
+            (self.worker_pos[0] + 3.0) / 10.0, (self.worker_pos[1] + 5.0) / 5.0,
+            (self.robot_pos[0] + 3.0) / 10.0, (self.robot_pos[1] + 5.0) / 5.0,
+            float(np.linalg.norm(self.worker_pos - self.robot_pos)) / 6.0,
         ]
         assert len(obs) == OBS_DIM, len(obs)
         return np.clip(np.array(obs, dtype=np.float32), 0.0, 1.0)
@@ -511,6 +622,8 @@ class CobuildDrywallEnv(gym.Env):
             'awkward_handovers': self.awkward, 'boards_installed': min(self.board, C.N_BOARDS),
             'final_fatigue': round(self.fatigue_multiplier, 3), 'activity_ticks': dict(self.activity_ticks),
             'profile': self.profile.name,
+            'safety_stops': self.safety_stops, 'contacts': self.contacts, 'robot_yields': self.yields,
+            'min_separation_m': round(self.min_separation, 2),
         }
 
     def render(self):

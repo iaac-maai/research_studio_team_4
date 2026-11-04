@@ -103,3 +103,7 @@ R_EXPOSURE = -0.1          # per tick the robot hovers with a tool nobody has ta
 R_UNNECESSARY = -1.0       # command that makes no sense in the current state
 R_IGNORED = -0.2           # command sent while the robot is busy
 R_COMPLETE = 10.0
+
+# --- Safety (geometry.py): the robot base and the worker keep >= 1.1 m apart ------------------
+R_SAFETY_STOP = -2.0       # per tick the safety rule stops the robot or the worker (the lost time is charged on top)
+R_CONTACT = -20.0          # per tick the bodies actually touch (blocked for more than 3 ticks in a row)
