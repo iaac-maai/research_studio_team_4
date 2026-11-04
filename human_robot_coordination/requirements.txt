@@ -1,0 +1,7 @@
+# Tested on Windows 11, Python 3.12.
+# MediaPipe 1.x removed the legacy `mp.solutions` API; this project uses the Tasks API.
+mediapipe>=1.2,<2        # pulls in opencv-contrib-python and numpy
+numpy>=2.0
+matplotlib>=3.8          # used from Stage 3 (results graphs)
+pytest>=8                # tests
+# Stage 2 (not needed yet): pybullet
