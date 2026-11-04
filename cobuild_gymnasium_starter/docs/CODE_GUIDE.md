@@ -43,7 +43,8 @@ profiles.py ──► cobuild_env.py ◄── config.py        (the world: work
 | 8 | [plots.py](../plots.py) | ~195 | Figures 1–5 | you want another plot |
 | 9 | [analysis.py](../analysis.py) | ~202 | Trait contribution + sensitivity (figures 6–7) | you want to test another assumption |
 | 10 | [scene3d.py](../scene3d.py), [visualize_3d.py](../visualize_3d.py) | ~299 / ~393 | The 3D scene and the video director | you want to change how it looks |
-| 11 | [tests/test_env.py](../tests/test_env.py) | ~144 | 48 automated tests | always, after changing anything |
+| 11 | [collisions.py](../collisions.py), [audit_3d.py](../audit_3d.py) | ~190 / ~110 | Shape-vs-shape distances in the 3D scene; the audit report; `yield_robot` (the robot gives way) | the 3D shows things passing through each other |
+| 12 | [tests/](../tests/) | ~144 + ~30 | 53 automated tests (`test_env.py`, `test_3d.py`) | always, after changing anything |
 
 **Recommended reading order:** `config.py` → `profiles.py` → the docstrings of `ergonomics.py` → `cobuild_env.py` (`reset`, `step`, `_observation`) → `strategies.py` → `evaluate.py`. That covers 90 % of it. You can ignore the 3D at first: it does not affect any result.
 
@@ -177,7 +178,7 @@ python train.py --variant profile --seed 7   # only the profile-aware model, ano
 - **Important:** the 3D changes no result. If a video looks odd, the bug is in the drawing, not in the numbers.
 
 ### 3.10 `tests/test_env.py`: the safety net
-48 tests. The most useful ones for understanding the design:
+`test_env.py` has 48 tests; `test_3d.py` adds 5 (nothing through the floor or the set, worker/robot/board overlaps stay small). The most useful ones for understanding the design:
 - the environment follows the Gymnasium API (`check_env`),
 - the action masks are correct,
 - same seed ⇒ same worker in every strategy,

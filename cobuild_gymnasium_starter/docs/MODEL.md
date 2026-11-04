@@ -129,6 +129,7 @@ The robot does **not** see the worker's random variability or accumulated strain
 - **Strain points** are a relative unit, not a clinical score (a later version could use REBA/RULA). Our simulated strain reduction from the robot (−59 %) is of the same order as Dasgupta's −52 % low-back compressive force for a *partial* aid; it was **not tuned** to match.
 - **Time savings from holding are model-driven.** Dasgupta found that supporting the panel did **not** shorten the cycle (5:00 vs 4:30 on a ladder). In our model the robot saves time mostly by removing carrying and placing from the worker's critical path. If real alignment takes longer than assumed, the time saving shrinks (see the "robot alignment takes 4 ticks" scenario).
 - Movement between stations takes no time, one worker, one robot, one wall, no safety model, profiles assumed accurate.
+- **There is no geometry in the model**: stations are points, movement is instantaneous, and neither the reward nor the strategies know where the worker's body or the robot's arm are. So "collisions" exist only in the 3D drawing (`audit_3d.py`), and there is no safety term in the reward. A robot that would really cross the worker's space needs a spatial layer (positions, paths, minimum distances) added to the environment first, and then a penalty applied to **every** strategy, including the baselines.
 - The 3D scene is schematic. A real robot that lifts 34 kg to 2.4 m is a mobile manipulator with a lift column; it is not a Franka Panda.
 
 ### What to measure to make this real

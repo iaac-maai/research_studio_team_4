@@ -124,9 +124,9 @@ def build_xml(profile):
     bodies.append(_mocap('carriage', [_geom('carriage_g', 'box', (0.12, 0.12, 0.1), DARK)]))
     bodies.append(_mocap('link1', [_geom('link1_g', 'capsule', (0.055, 0.4), ROBOT_RGBA)]))
     bodies.append(_mocap('link2', [_geom('link2_g', 'capsule', (0.045, 0.4), ROBOT_RGBA)]))
-    bodies.append(_mocap('frame', [_geom('frame_g', 'box', (0.55, 0.03, 0.3), DARK),
+    bodies.append(_mocap('frame', [_geom('frame_g', 'box', (0.4, 0.03, 0.15), DARK),
                                    *[_geom(f'cup{i}', 'cylinder', (0.045, 0.02), (0.1, 0.1, 0.1, 1),
-                                           pos=(sx * 0.4, -0.03, sz * 0.2)) for i, (sx, sz) in
+                                           pos=(sx * 0.3, -0.03, sz * 0.1)) for i, (sx, sz) in
                                      enumerate([(1, 1), (1, -1), (-1, 1), (-1, -1)])]]))
     bodies.append(_mocap('gripper', [_geom('gripper_g', 'box', (0.07, 0.05, 0.05), DARK)]))
     bodies.append(_mocap('tool_cut', [_geom('tc_g', 'box', (0.14, 0.03, 0.03), (0.95, 0.85, 0.1, 1)),
@@ -214,7 +214,9 @@ class Scene:
         sw = 0.125 * H
         step = w['walk']
         for side, sx in (('l', -1), ('r', 1)):
-            foot = np.array([px + sx * 0.05 * H, py + sx * 0.14 * np.sin(step) * (1 if w['moving'] else 0), pz])
+            # the leg capsule has rounded ends: lift the foot target by its radius so the shoe rests ON the floor
+            foot = np.array([px + sx * 0.05 * H, py + sx * 0.14 * np.sin(step) * (1 if w['moving'] else 0),
+                             pz + 0.04 * H])
             self.capsule(f'leg_{side}', hip + [sx * 0.05 * H, 0, 0], foot)
             S = sh_c + [sx * sw, 0, 0]
             T = np.asarray(w['hand_' + side], float)
@@ -254,12 +256,17 @@ class Scene:
         horiz = np.array([ee[0] - S[0], ee[1] - S[1], 0.0])
         hn = np.linalg.norm(horiz)
         up = np.array([0, 0, 1.0])
-        elbow, ee = self._elbow(S, ee, L1, L2, up if hn > 1e-6 else up)
+        hint = up + np.asarray(r.get('elbow_push', (0.0, 0.0, 0.0)), float)     # bend the elbow away from obstacles
+        elbow, ee = self._elbow(S, ee, L1, L2, hint)
         self.capsule('link1', S, elbow)
         self.capsule('link2', elbow, ee)
         kind = r['kind']
         if kind == 'board':
-            self.put('frame', ee + [0, -0.045, 0], q_axis([0, 0, 1], 0))
+            # the suction frame follows the board it carries: lying on top of a flat board (frame_t 0) and in front
+            # of an upright one (frame_t 1)
+            ft = float(r.get('frame_t', 1.0))
+            q = (1 - ft) * Q_FLAT + ft * Q_ID
+            self.put('frame', ee + np.array([0, -0.045 * ft, 0.045 * (1 - ft)]), q / np.linalg.norm(q))
             self.hide('gripper')
         else:
             self.hide('frame')

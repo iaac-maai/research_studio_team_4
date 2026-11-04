@@ -24,7 +24,7 @@ cd research_studio_team_4/cobuild_gymnasium_starter
 python3 -m venv .venv && source .venv/bin/activate                  # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
 
-# 3. Check that everything works (48 tests, ~1 min)
+# 3. Check that everything works (53 tests, ~1 min)
 python -m pytest -q tests
 
 # 4. Rebuild the tables and figures from the saved models -> results/
@@ -59,7 +59,7 @@ python -m pip install -r requirements.txt
 From this folder:
 
 ```bash
-python -m pytest -q tests          # 1. tests (API, fairness checks, calibration against field data)
+python -m pytest -q tests          # 1. tests (API, fairness checks, calibration against field data, 3D clearance)
 python train.py                    # 2. train PPO with and without the profile (~10 min)
 python evaluate.py                 # 3. repeat the installation many times -> results/summary.md + figures
 python analysis.py                 # 4. which traits matter + sensitivity to assumptions (~3 min)
@@ -88,6 +88,15 @@ The decisions come from exactly the same `CobuildDrywallEnv` and strategies used
 
 > The earlier 3D viewer (Panda arm, robosuite) belongs to v0 and still lives in `v0_side_preference/`.
 
+**Collisions in the 3D.** The environment has no geometry (movement between stations takes no time), so a collision can only happen in the *drawing*; it does not change any result or any reward. The choreography keeps things apart: the worker walks around the pallet, cart and tool table, stays behind a board they carry, steps aside when the robot brings a board to the cart; the robot gives way (base slides, elbow bends) when it would touch the worker, a board or the set; boards turning upright are lifted so no corner cuts the floor. [audit_3d.py](audit_3d.py) measures what is left, frame by frame, with MuJoCo's shape distances:
+
+```bash
+python audit_3d.py                                   # 3 personas x 3 strategies, summary table
+python audit_3d.py --profile short_left --strategy C_cobuild_rule --verbose
+```
+
+Current state: nothing goes through the floor or the set, and the remaining overlaps are brief grazes of at most about 9 cm between the worker and the robot's arm or a carried board. Not zero, and a human-robot safety analysis would need real geometry (see [docs/MODEL.md](docs/MODEL.md) §9).
+
 ## What each file does
 
 | File | Role |
@@ -102,7 +111,8 @@ The decisions come from exactly the same `CobuildDrywallEnv` and strategies used
 | [plots.py](plots.py) | figures `results/fig1…fig5` |
 | [analysis.py](analysis.py) | trait contribution + sensitivity → `results/analysis.md`, `fig6`, `fig7` |
 | [scene3d.py](scene3d.py), [visualize_3d.py](visualize_3d.py) | the 3D scene (MuJoCo, visual only) and the video/live director |
-| [tests/](tests/) | 48 automated checks (incl. calibration against Yuan et al.) |
+| [audit_3d.py](audit_3d.py), [collisions.py](collisions.py) | measure what passes through what in the 3D, and make the robot give way |
+| [tests/](tests/) | 53 automated checks (incl. calibration against Yuan et al.) |
 | [v0_side_preference/](v0_side_preference/), [v1_handover_poses/](v1_handover_poses/) | earlier prototypes, kept for reference |
 
 ---
