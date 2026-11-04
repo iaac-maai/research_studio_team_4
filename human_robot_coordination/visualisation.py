@@ -28,17 +28,22 @@ def _panel(img, x0, y0, x1, y1, alpha=0.6):
     roi[:] = (roi * (1 - alpha)).astype(roi.dtype)
 
 
-def draw_tracking(img: np.ndarray, tf: TrackingFrame, fps: float = 0.0) -> None:
-    """Draw skeleton and tracking readout on the image in place."""
-    colour = _COLOURS[tf.status]
+def draw_skeleton(img: np.ndarray, tf: TrackingFrame, colour=None) -> None:
+    """Draw only the body skeleton (no text), in place."""
+    colour = colour or _COLOURS[tf.status]
     if tf.landmarks_px is not None and tf.status != TrackingStatus.LOST:
         pts = tf.landmarks_px
         for a, b in SKELETON:
             if pts[a, 2] > 0 and pts[b, 2] > 0:
-                cv2.line(img, tuple(pts[a, :2].astype(int)), tuple(pts[b, :2].astype(int)), colour, 2)
+                cv2.line(img, tuple(pts[a, :2].astype(int)), tuple(pts[b, :2].astype(int)), colour, 3)
         for x, y, v in pts:
             if v > 0:
-                cv2.circle(img, (int(x), int(y)), 3, (255, 255, 255), -1)
+                cv2.circle(img, (int(x), int(y)), 4, (255, 255, 255), -1)
+
+
+def draw_tracking(img: np.ndarray, tf: TrackingFrame, fps: float = 0.0) -> None:
+    """Draw skeleton and tracking readout on the image in place."""
+    draw_skeleton(img, tf)
 
     lines = [f"Status: {tf.status.value}   FPS {fps:.0f}"]
     if tf.status == TrackingStatus.LOST:

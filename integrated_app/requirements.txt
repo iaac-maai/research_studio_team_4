@@ -1,0 +1,7 @@
+-r ../human_robot_coordination/requirements.txt
+# Cobuild simulation (rule-based strategies; PPO would additionally need torch + stable-baselines3 + sb3-contrib)
+gymnasium>=1.1,<2
+pandas>=2.1
+tabulate>=0.9
+mujoco>=3.1
+pillow>=10
