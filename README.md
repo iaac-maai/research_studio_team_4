@@ -8,3 +8,4 @@ Emma, Amelia, Karthik — IAAC Research Studio
 - [docs/CODE_GUIDE.md](cobuild_gymnasium_starter/docs/CODE_GUIDE.md) — how to read, modify and understand the code, step by step.
 - [docs/RESEARCH.md](cobuild_gymnasium_starter/docs/RESEARCH.md) — how drywall is installed, what a robot arm can do, and the published data we calibrate to.
 - [docs/MODEL.md](cobuild_gymnasium_starter/docs/MODEL.md) — how the model works, explained for the team and professors.
+- [roboarm/](roboarm/) — 2D robotic-arm pick-and-place simulator with classical motion planning (RRT-Connect, optional OMPL), the baseline before reinforcement learning. See its [README](roboarm/README.md).

@@ -1,0 +1,8 @@
+numpy>=1.24
+pygame>=2.5
+
+# Tests
+pytest>=7
+
+# Optional: OMPL planning library (no ROS needed) - enables  python main.py --planner ompl
+# ompl>=2.0
