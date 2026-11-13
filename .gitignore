@@ -12,13 +12,12 @@ env/
 .conda/
 .env
 
-# --- Salidas de entrenamiento / RL ---
-# Logs de TensorBoard y Stable-Baselines3
+# --- Generated experiment logs ---
 runs/
 logs/
 tensorboard/
 *_tensorboard/
-# Checkpoints intermedios (el modelo final cobuild_ppo.zip SÍ se versiona)
+# Intermediate experiment checkpoints
 checkpoints/
 
 # --- Videos y renders generados ---
