@@ -94,3 +94,21 @@ def test_works_with_more_joints():
                     joint_limits_deg=[(0, 180)] + [(-150, 150)] * 3)
     sols = arm.ik_solutions(np.array([-2.5, 1.5]), np.radians(-90), np.random.default_rng(6))
     assert sols and arm.forward_kinematics(sols[0]).shape == (5, 2)
+
+
+# --------------------------------------------------------------------------- singularity / posture
+def test_singularity_measure_is_abs_sin_q2_for_three_joints():
+    arm = PlanarArm()
+    Q = arm.sample(np.random.default_rng(1), 200)
+    assert np.allclose(arm.singularity_measure(Q), np.abs(np.sin(Q[:, 1])), atol=1e-9)
+    assert arm.singularity_measure(np.radians([90.0, 0.0, 30.0])) == pytest.approx(0.0, abs=1e-9)
+    assert isinstance(arm.singularity_measure(Q[0]), float)
+
+
+def test_posture_labels_distinguish_elbow_branches():
+    arm = PlanarArm()
+    sols = arm.ik_solutions(np.array([2.0, 1.5]), np.radians(-90), np.random.default_rng(2))
+    labels = {arm.posture_label(q) for q in sols}
+    assert labels <= {"elbow up", "elbow down"}
+    if len(sols) >= 2:
+        assert labels == {"elbow up", "elbow down"}

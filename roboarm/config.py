@@ -27,6 +27,10 @@ LINK_RADII = [0.12, 0.10, 0.075]         # links are "capsules" (thick segments)
 JOINT_LIMITS_DEG = [(0.0, 180.0), (-150.0, 150.0), (-150.0, 150.0)]
 HOME_CONFIG_DEG = [95.0, -55.0, -125.0]  # "parked" pose; must be collision-free
 LINK_LENGTH_SLIDER_RANGE = (0.6, 2.6)
+# If HOME_CONFIG_DEG collides (e.g. after changing link lengths), the nearest
+# collision-free pose is searched in growing joint-space rings around it.
+HOME_SEARCH_RINGS = 12       # ring radii from 0.15 rad up to pi
+HOME_SEARCH_SAMPLES = 300    # random poses tried per ring
 
 # Gripper (attached to the end of the last link = the "flange")
 TCP_OFFSET = 0.26        # flange -> tool centre point (where the object is held)
@@ -84,6 +88,19 @@ SHORTCUT_ITERATIONS = 400         # path smoothing attempts (0 = keep raw RRT pa
 IK_RESTARTS = 40                  # random seeds for the inverse-kinematics solver
 RETURN_HOME = True                # plan a last move back to the home pose
 RANDOM_SEED = None                # set an int for repeatable plans
+# How to use the several IK solutions (arm postures) found at a station:
+#   "first"   - give them all to RRT-Connect as goals; it uses whichever it reaches first
+#   "compare" - plan to each posture separately, score each motion, keep the best
+#               (slower: one RRT-Connect query per posture; shown in the IK table)
+IK_SELECTION = "first"
+SINGULARITY_THRESHOLD = 0.15      # singularity measure below this = "near singular" (|sin q2| for 3 joints)
+SINGULARITY_PENALTY = True
+# When planning fails, show a naive attempt anyway: the arm moves straight toward
+# the target (no obstacle avoidance), stops at the first collision or as close
+# as it can reach ("Oops!"), pauses, then drives back to where it started.
+SHOW_FAILED_ATTEMPT = True
+ATTEMPT_PAUSE = 1.6               # seconds the arm stays at the "Oops!" pose
+ATTEMPT_SPEED_FACTOR = 0.8        # attempt speed relative to normal motion        # in "compare" mode, penalise postures whose motion passes near a singularity
 
 # --------------------------------------------------------------------------- #
 # Animation

@@ -93,9 +93,11 @@ class Renderer:
             "small": pygame.font.Font(None, 19),
             "tiny": pygame.font.Font(None, 16),
             "label": pygame.font.Font(None, 30),
+            "mono": pygame.font.SysFont("consolas,dejavusansmono,couriernew", 13),
         }
         self.show = {"trajectory": True, "tree": False, "ghosts": True, "collision": False,
-                     "cspace": False, "help": False}
+                     "cspace": False, "help": False, "singularity": True}
+        self.cspace_pair = 0    # index into cspace_pairs(): which two joints the C-space view shows
         self.hover_obstacle = None
         self.drag_obstacle = None
         self._layer_key = None
@@ -115,11 +117,17 @@ class Renderer:
         report = sim.current_report()
         self._draw_object(world, sim)
         self._draw_robot(world, sim, report)
+        if self.show["singularity"]:
+            self._draw_singularity(world, sim)
         if self.show["collision"]:
             self._draw_collision_view(world, sim, report)
         self._draw_readout(world, sim, report)
         if self.show["cspace"]:
             self._draw_cspace(world, sim)
+        if sim.attempt is not None:
+            self._draw_attempt(world, sim)
+        if sim.ik_compare and sim.plan is not None and sim.plan.ik_comparison:
+            self._draw_ik_table(world, sim)
         self._draw_top_bar(sim)
         self._draw_panel(sim, widgets)
         if sim.busy:
@@ -330,24 +338,41 @@ class Renderer:
             surf.blit(t, (12, cfg.TOP_BAR_HEIGHT + 10 + 18 * k))
 
     # ------------------------------------------------------------ C-space inset
+    @staticmethod
+    def cspace_pairs(n_joints):
+        """Joint pairs the C-space view can show: (q1,q2), (q1,q3), (q2,q3), ..."""
+        return [(i, j) for i in range(n_joints) for j in range(i + 1, n_joints)]
+
+    def next_cspace_pair(self, sim):
+        self.cspace_pair = (self.cspace_pair + 1) % max(1, len(self.cspace_pairs(sim.robot.n_joints)))
+        self.show["cspace"] = True
+
     def _draw_cspace(self, surf, sim):
+        """Exact 2D slice of the configuration space through the current pose.
+
+        Two joints vary along the axes; every other joint is held at its current
+        value. Planning happens in the full N-D joint space, so trees and paths
+        drawn here are projections onto the two shown joints.
+        """
         robot = sim.robot
         if robot.n_joints < 2:
             return
+        pairs = self.cspace_pairs(robot.n_joints)
+        a, b = pairs[self.cspace_pair % len(pairs)]
+        others = [k for k in range(robot.n_joints) if k not in (a, b)]
         w, h = 300, 220
         box = pygame.Rect(VIEW_W - w - 12, cfg.TOP_BAR_HEIGHT + 10, w, h)
         plot = pygame.Rect(box.x + 34, box.y + 24, w - 44, h - 50)
-        key = (sim.scene_version, sim.env.object_station, sim.held is None,
-               tuple(np.round(sim.q[2:], 2)), tuple(robot.lengths))
+        key = (sim.scene_version, sim.env.object_station, sim.held is None, (a, b),
+               tuple(np.round(sim.q[others], 2)), tuple(robot.lengths))
         now = time.perf_counter()
         if self._cspace is None or (self._cspace[0] != key and now - self._cspace[2] > 0.25):
             nx, ny = 96, 72
-            g1 = np.linspace(robot.lower[0], robot.upper[0], nx)
-            g2 = np.linspace(robot.lower[1], robot.upper[1], ny)
-            G = np.zeros((nx * ny, robot.n_joints))
-            G[:, 0] = np.repeat(g1, ny)
-            G[:, 1] = np.tile(g2, nx)
-            G[:, 2:] = sim.q[2:]
+            g1 = np.linspace(robot.lower[a], robot.upper[a], nx)
+            g2 = np.linspace(robot.lower[b], robot.upper[b], ny)
+            G = np.tile(sim.q, (nx * ny, 1))
+            G[:, a] = np.repeat(g1, ny)
+            G[:, b] = np.tile(g2, nx)
             free = sim.current_checker().valid_batch(G).reshape(nx, ny)[:, ::-1]
             img = np.where(free[..., None], np.array(C["background"]), np.array(C["obstacle"]))
             self._cspace = (key, pygame.transform.scale(pygame.surfarray.make_surface(img.astype(np.uint8)),
@@ -360,8 +385,8 @@ class Renderer:
 
         def cs(q):
             q = np.atleast_2d(q)
-            x = plot.x + (q[:, 0] - robot.lower[0]) / (robot.upper[0] - robot.lower[0]) * plot.w
-            y = plot.bottom - (q[:, 1] - robot.lower[1]) / (robot.upper[1] - robot.lower[1]) * plot.h
+            x = plot.x + (q[:, a] - robot.lower[a]) / (robot.upper[a] - robot.lower[a]) * plot.w
+            y = plot.bottom - (q[:, b] - robot.lower[b]) / (robot.upper[b] - robot.lower[b]) * plot.h
             return np.stack([x, y], axis=-1)
 
         clip = surf.get_clip()
@@ -385,13 +410,90 @@ class Renderer:
         aa_circle(surf, C["accent"], cs(sim.q)[0], 4)
         surf.set_clip(clip)
         f = self.fonts["tiny"]
-        rest = ", ".join(f"q{k + 1}={np.degrees(v):.0f}°" for k, v in enumerate(sim.q[2:], start=2))
-        surf.blit(f.render(f"C-space slice (q1, q2) at {rest}", True, C["text"]), (box.x + 8, box.y + 7))
-        surf.blit(f.render(f"q1 {np.degrees(robot.lower[0]):.0f}° to {np.degrees(robot.upper[0]):.0f}°",
+        rest = ", ".join(f"q{k + 1}={np.degrees(sim.q[k]):.0f}°" for k in others)
+        surf.blit(f.render(f"C-space slice (q{a + 1}, q{b + 1}) at {rest}   [V: next pair]", True, C["text"]),
+                  (box.x + 8, box.y + 7))
+        surf.blit(f.render(f"q{a + 1} {np.degrees(robot.lower[a]):.0f}° to {np.degrees(robot.upper[a]):.0f}°",
                            True, C["text"]), (plot.x, plot.bottom + 5))
         surf.blit(f.render("dark = collision", True, C["obstacle"]), (plot.right - 80, plot.bottom + 5))
-        lab = pygame.transform.rotate(f.render("q2", True, C["text"]), 90)
+        lab = pygame.transform.rotate(f.render(f"q{b + 1}", True, C["text"]), 90)
         surf.blit(lab, (box.x + 10, plot.centery - 8))
+
+    # ------------------------------------------------------------ naive attempt
+    def _draw_attempt(self, surf, sim):
+        """Where the arm was trying to go (red X) and an "Oops!" bubble at the gripper."""
+        att = sim.attempt
+        t = to_screen(att.target)
+        for d in ((-9, -9, 9, 9), (-9, 9, 9, -9)):
+            pygame.draw.line(surf, C["error"], (t[0] + d[0], t[1] + d[1]), (t[0] + d[2], t[1] + d[3]), 3)
+        report = sim.current_report()
+        if report["colliding"]:                        # red "impact" burst where it hit
+            hit = to_screen(report["closest"][3])
+            for k, r in enumerate((22, 15, 8)):
+                pygame.gfxdraw.filled_circle(surf, int(hit[0]), int(hit[1]), r, C["error"] + (70 + 60 * k,))
+            for ang in np.linspace(0, 2 * np.pi, 8, endpoint=False):
+                d = np.array([np.cos(ang), np.sin(ang)])
+                pygame.draw.line(surf, C["error"], hit + 12 * d, hit + 26 * d, 3)
+        if sim.attempt_phase == "out":
+            text, color = "Trying without a planner...", C["warn"]
+        else:
+            text, color = att.message, C["error"]
+        img = self.fonts["text"].render(text, True, (255, 255, 255))
+        tip = to_screen(sim.robot.tcp(sim.q))
+        box = img.get_rect(midbottom=(tip[0], tip[1] - 34)).inflate(22, 14)
+        box.clamp_ip(pygame.Rect(4, cfg.TOP_BAR_HEIGHT + 4, VIEW_W - 8, cfg.WINDOW_HEIGHT - 60))
+        pygame.draw.polygon(surf, color, [(box.centerx - 8, box.bottom - 1), (box.centerx + 8, box.bottom - 1),
+                                          (tip[0], tip[1] - 12)])
+        pygame.draw.rect(surf, color, box, border_radius=12)
+        surf.blit(img, img.get_rect(center=box.center))
+
+    # ------------------------------------------------------------ singularity
+    def _singularity_color(self, w):
+        thr = cfg.SINGULARITY_THRESHOLD
+        return C["error"] if w < thr else (C["warn"] if w < 2 * thr else C["ok"])
+
+    def _draw_singularity(self, surf, sim):
+        """Ring around the elbow: green = well conditioned, orange = getting close,
+        red = near singular (elbow almost fully stretched or folded)."""
+        robot = sim.robot
+        if robot.n_joints < 3:
+            return
+        w = robot.singularity_measure(sim.q)
+        color = self._singularity_color(w)
+        elbow = to_screen(robot.forward_kinematics(sim.q)[1])
+        r = int(robot.radii[1] * SCALE + 9)
+        for k in range(3):
+            pygame.gfxdraw.aacircle(surf, int(elbow[0]), int(elbow[1]), r + k, color)
+        if w < cfg.SINGULARITY_THRESHOLD:
+            t = self.fonts["small"].render(f"near singular ({w:.2f})", True, color)
+            surf.blit(t, (elbow[0] + r + 6, elbow[1] - 8))
+
+    # ------------------------------------------------------------ IK comparison table
+    def _draw_ik_table(self, surf, sim):
+        """Every IK posture considered in "compare" mode, with the chosen one marked."""
+        rows = sim.plan.ik_comparison
+        lines = [("IK postures compared  (cost = joint length, x penalty if near singular)", C["text"])]
+        lines.append((f"{'phase':<13}{'#':>2}  {'posture':<11}{'result':<9}{'time':>6}{'length':>8}"
+                      f"{'min sing':>9}{'cost':>7}", C["panel_dim"]))
+        for r in rows:
+            if r["success"]:
+                txt = (f"{r['phase']:<13}{r['candidate']:>2}  {r['posture']:<11}{'ok':<9}{r['time_s']:>5.2f}s"
+                       f"{r['length_rad']:>7.2f} {r['min_singularity']:>8.2f}{r['cost']:>7.2f}")
+                txt += "  <- chosen" if r["chosen"] else ""
+                color = C["clearance"] if r["chosen"] else C["text"]
+            else:
+                txt = f"{r['phase']:<13}{r['candidate']:>2}  {r['posture']:<11}{r['message'][:58]}"
+                color = C["error"]
+            lines.append((txt, color))
+        mono = self.fonts["mono"]
+        width = max(mono.size(t)[0] for t, _ in lines) + 20
+        box = pygame.Rect(10, cfg.TOP_BAR_HEIGHT + 8, width, 17 * len(lines) + 12)
+        panel = pygame.Surface(box.size, pygame.SRCALPHA)
+        panel.fill((255, 255, 255, 235))
+        surf.blit(panel, box)
+        pygame.draw.rect(surf, C["obstacle_edge"], box, 1, border_radius=4)
+        for k, (t, color) in enumerate(lines):
+            surf.blit(mono.render(t, True, color), (box.x + 10, box.y + 6 + 17 * k))
 
     # ------------------------------------------------------------ text
     def _draw_readout(self, surf, sim, report):
@@ -401,6 +503,8 @@ class Renderer:
         clr = report["clearance"]
         color = C["error"] if report["colliding"] else C["text"]
         text = f"{joints}    TCP ({tcp[0]:.2f}, {tcp[1]:.2f}) m    clearance {clr:.3f} m"
+        if sim.robot.n_joints >= 3:
+            text += f"    singularity {sim.robot.singularity_measure(sim.q):.2f}"
         if sim.held is not None:
             text += "    holding object"
         t = self.fonts["small"].render(text, True, color)
@@ -415,6 +519,7 @@ class Renderer:
         pygame.draw.rect(s, (255, 255, 255), bar)
         pygame.draw.line(s, C["grid"], (0, bar.bottom - 1), (VIEW_W, bar.bottom - 1), 1)
         state_colors = {"idle": (150, 150, 160), "planning": C["button_on"], "ready": C["ok"],
+                        "attempt": C["warn"],
                         "running": C["accent"], "paused": C["warn"], "done": C["ok"], "failed": C["error"]}
         badge = pygame.Rect(10, 8, 92, 24)
         pygame.draw.rect(s, state_colors.get(sim.state, (150, 150, 160)), badge, border_radius=12)
@@ -486,6 +591,7 @@ class Renderer:
             "G       store current pose as joint goal               J       plan to the stored joint goal",
             "T  trajectory   Y  RRT tree   O  ghost arms   C  collision view   K  C-space view",
             "+ / -   animation speed                                 S       toggle path smoothing",
+            "I       IK postures: first reached / compare all       L       singularity ring   V  next C-space pair",
             "",
             "Colours: orange = robot, blue = movable obstacles, green box = object, magenta / green = tool path,",
             "blue / orange thin lines = the two RRT-Connect trees (drawn where the tool would be).",

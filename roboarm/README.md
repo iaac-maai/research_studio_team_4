@@ -21,14 +21,16 @@ In the window, press **Plan path** (P), then **Start** (Space). After the box re
 
 | Control | What it does |
 |---|---|
-| **Plan path** `P` | Plans the full pick-and-place from the arm's current pose. Planning runs in the background; `Esc` cancels it. |
+| **Plan path** `P` | Plans the full pick-and-place from the arm's current pose. Planning runs in the background; `Esc` cancels it. If planning fails (e.g. links too short), the arm still *tries*: it moves straight toward the object with no obstacle avoidance, stops at the first collision (red impact mark, "Oops! Crashed into ...") or as close as it can reach ("Oops! Can't reach ..."), then returns to where it started. Turn off with `SHOW_FAILED_ATTEMPT` in config.py. |
 | **Start / Pause** `Space` | Plays or pauses the planned motion. |
 | **Reset** `R` | Arm back home, box back on table A. |
 | **Regenerate** `N` | Random obstacle layout. Each candidate is checked by actually planning it, so you only ever get a solvable layout. |
 | **Default layout** `D` | Restores the original obstacles. |
 | **Trajectory** `T` / **RRT tree** `Y` / **Ghost arms** `O` | Show or hide the tool path, the search trees and the arm snapshots. |
 | **Collisions** `C` | Draws the collision shapes, the closest obstacle and its distance, and names of colliding parts. |
-| **C-space** `K` | Small plot of the configuration space (see section 4). |
+| **C-space** `K` | Small plot of the configuration space (see section 4). `V` switches which pair of joints it shows (q1-q2, q1-q3, q2-q3). |
+| **IK compare** `I` | How the several IK postures at a station are used. Off (default): RRT-Connect gets all of them as goals and keeps whichever it reaches first. On: each posture is planned separately, scored (joint-space length, times a penalty if the motion passes near a singularity) and the cheapest is kept; a table shows every posture, including ones rejected before planning. Slower: one planning query per posture. |
+| **Singularity** `L` | Ring around the elbow: green = well conditioned, orange = getting close, red = near singular (elbow almost straight or folded). The value (`|sin q2|` for three joints) is also shown in the bottom read-out. |
 | **Smoothing** `S` | Turns path shortcutting on or off for the next plan. Compare the raw and smoothed path lengths. |
 | **Store goal** `G` / **Plan to goal** `J` | Stage C mode: store the current pose, move the arm, then plan a motion back to the stored pose. |
 | Mouse drag | Drag any blue obstacle. The plan becomes invalid; press Plan to replan, even mid-task while the arm holds the box. |

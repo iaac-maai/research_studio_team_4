@@ -39,6 +39,8 @@ def build_widgets(sim, renderer):
         ("Collisions", toggle("collision"), lambda: show["collision"], None, "C"),
         ("C-space", toggle("cspace"), lambda: show["cspace"], None, "K"),
         ("Smoothing", toggle_smoothing, lambda: sim.smoothing, None, "S"),
+        ("IK compare", sim.toggle_ik_compare, lambda: sim.ik_compare, idle, "I"),
+        ("Singularity", toggle("singularity"), lambda: show["singularity"], None, "L"),
         ("Store goal", sim.store_custom_goal, None, None, "G"),
         ("Plan to goal", sim.request_joint_plan, None, idle, "J"),
         ("Default layout", sim.restore_default_layout, None, idle, "D"),
@@ -167,7 +169,8 @@ def handle_key(event, sim, renderer, pygame):
     """Keyboard shortcuts. Returns False to quit."""
     k, show = event.key, renderer.show
     toggles = {pygame.K_t: "trajectory", pygame.K_y: "tree", pygame.K_o: "ghosts",
-               pygame.K_c: "collision", pygame.K_k: "cspace", pygame.K_h: "help"}
+               pygame.K_c: "collision", pygame.K_k: "cspace", pygame.K_h: "help",
+               pygame.K_l: "singularity"}
     if k == pygame.K_ESCAPE:
         if sim.busy:
             sim.cancel_planning()
@@ -191,6 +194,10 @@ def handle_key(event, sim, renderer, pygame):
         sim.store_custom_goal()
     elif k == pygame.K_j and not sim.busy:
         sim.request_joint_plan()
+    elif k == pygame.K_i and not sim.busy:
+        sim.toggle_ik_compare()
+    elif k == pygame.K_v:
+        renderer.next_cspace_pair(sim)
     elif k == pygame.K_s:
         sim.smoothing = not sim.smoothing
         sim.set_status(f"Path smoothing {'on' if sim.smoothing else 'off'} (applies to the next plan).")

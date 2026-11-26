@@ -10,6 +10,8 @@ States
   paused    animation paused (or stopped because something changed)
   done      the plan finished
   failed    the last planning attempt failed
+  attempt   planning failed; the arm is showing a naive straight-line try
+            ("Oops!") and then returns to where it started (see attempt.py)
 
 Planning runs in a background thread so the window stays responsive. The
 thread works on COPIES of the robot and environment, so dragging things
@@ -22,6 +24,7 @@ import time
 import numpy as np
 
 import config as cfg
+from attempt import naive_attempt
 from collision import CollisionChecker
 from environment import Environment
 from metrics import append_log, densify
@@ -52,6 +55,13 @@ class Simulation:
         self.speed = 1.0
         self.max_iterations = cfg.MAX_ITERATIONS
         self.smoothing = cfg.SHORTCUT_ITERATIONS > 0
+        self.ik_compare = cfg.IK_SELECTION == "compare"
+        self.attempt = None             # naive "try anyway" motion after a failed plan
+        self.attempt_phase = ""         # "out" -> "oops" -> "back"
+        self._att_s = 0.0
+        self._att_cum = None
+        self._att_timer = 0.0
+        self._att_reason = ""
         self.selected_joint = 0
         self.custom_goal = None
 
@@ -102,6 +112,46 @@ class Simulation:
         self.scene_version += 1
         self.invalidate("Environment changed.")
 
+    def safe_home(self):
+        """(home pose, adjusted) for the current link lengths and obstacles.
+
+        HOME_CONFIG_DEG is a fixed set of joint angles. With other link lengths
+        that pose can put the arm inside an obstacle, so Reset would always
+        return the arm to a colliding pose and planning could not start.
+        If the configured pose is collision-free it is returned unchanged;
+        otherwise the search moves outwards from it in growing joint-space rings
+        and returns the closest collision-free pose found (preferring poses with
+        at least PLANNING_MARGIN clearance). Deterministic (fixed seed).
+        """
+        configured = np.radians(cfg.HOME_CONFIG_DEG[:self.robot.n_joints])
+        env = self.env.copy()
+        env.place_object_at("A")                       # Reset puts the object back on table A
+        checker = CollisionChecker(self.robot, env, gripper_closed=False)
+        if checker.is_valid(configured):
+            return configured, False
+        rng = np.random.default_rng(0)
+        for radius in np.linspace(0.15, np.pi, cfg.HOME_SEARCH_RINGS):
+            offsets = rng.uniform(-radius, radius, (cfg.HOME_SEARCH_SAMPLES, self.robot.n_joints))
+            Q = self.robot.clip(configured + offsets)
+            ok = checker.valid_batch(Q)
+            if not ok.any():
+                continue
+            V = Q[ok]
+            roomy = checker.clearance_batch(V) >= cfg.PLANNING_MARGIN
+            if roomy.any():
+                V = V[roomy]
+            return V[int(np.argmin(np.linalg.norm(V - configured, axis=1)))], True
+        return configured, False                       # nothing found: keep the configured pose
+
+    def _update_home(self):
+        """Recompute home; if the arm was resting at the old home, move it too."""
+        at_home = (self.held is None and self.state in ("idle", "failed", "done")
+                   and np.allclose(self.q, self.home))
+        self.home, adjusted = self.safe_home()
+        if at_home:
+            self.q = self.home.copy()
+        return adjusted
+
     def set_link_length(self, index, length):
         if self.busy:
             return
@@ -109,10 +159,15 @@ class Simulation:
         self.scene_version += 1
         self.visual = None          # drawings were computed with the old link lengths
         self.invalidate(f"Link {index + 1} length changed.")
+        if self._update_home():
+            self.set_status(f"Link {index + 1} length changed. The configured home pose would collide "
+                            "with these link lengths, so home was moved to the nearest collision-free pose.",
+                            "warn")
 
     def jog(self, joint, delta):
         if self.busy or self.state == "running":
             return
+        self._abort_attempt()
         q = self.q.copy()
         q[joint] += delta
         self.q = self.robot.clip(q)
@@ -122,10 +177,12 @@ class Simulation:
     def reset(self):
         self.cancel_planning()
         self._job += 1
-        self.q = self.home.copy()
+        self.attempt = None
         self.held = None
         self.finger = self.robot.finger_open
         self.env.place_object_at("A")
+        self.home, _ = self.safe_home()   # stays collision-free after link-length / obstacle edits
+        self.q = self.home.copy()
         self.plan, self.plan_valid, self.visual = None, False, None
         self.step_index, self.step_s = 0, 0.0
         self.state = "idle"
@@ -146,6 +203,7 @@ class Simulation:
     def _start_worker(self, what, fn):
         if self.busy:
             return
+        self._abort_attempt()
         cancel = self._cancel = threading.Event()   # every job has its own cancel flag
         self._job += 1
         job = self._job
@@ -167,7 +225,14 @@ class Simulation:
     def _planner(self, robot, env, seed, cancel, max_iterations=None, return_home=cfg.RETURN_HOME):
         return TaskPlanner(robot, env, max_iterations or self.max_iterations, np.random.default_rng(seed),
                            cancel, cfg.SHORTCUT_ITERATIONS if self.smoothing else 0, return_home,
-                           backend=self.backend)
+                           backend=self.backend, ik_mode="compare" if self.ik_compare else "first")
+
+    def toggle_ik_compare(self):
+        self.ik_compare = not self.ik_compare
+        self.set_status("IK postures: " + ("compare - each posture is planned separately and the best is "
+                                           "kept (see the IK table)" if self.ik_compare else
+                                           "first reached (RRT-Connect uses whichever posture it reaches "
+                                           "first)") + ". Applies to the next plan.")
 
     def _pause_for_planning(self):
         if self.state == "running":
@@ -269,6 +334,8 @@ class Simulation:
             self.plan_valid = False
             self.state = "failed"
             self.set_status(f"Planning failed. {plan.message}", "error")
+            if cfg.SHOW_FAILED_ATTEMPT and "cancelled" not in plan.message.lower():
+                self._start_attempt(plan.message)
             return
         self.plan_valid = True
         self.state = "ready"
@@ -307,8 +374,61 @@ class Simulation:
                 seg = np.linalg.norm(np.diff(step.path, axis=0), axis=1)
                 self._cum = np.concatenate([[0.0], np.cumsum(seg)])
 
+    # ------------------------------------------------------------ naive attempt
+    def _start_attempt(self, reason):
+        """Planning failed: show the arm trying anyway (see attempt.py)."""
+        att = naive_attempt(self.robot, self.env, self.q, self.held, np.random.default_rng(0))
+        if len(att.path) < 2:
+            self.set_status(f"{att.message}  (Planning failed: {reason})", "error")
+            return
+        self.attempt, self.attempt_phase, self._att_reason = att, "out", reason
+        seg = np.linalg.norm(np.diff(att.path, axis=0), axis=1)
+        self._att_cum = np.concatenate([[0.0], np.cumsum(seg)])
+        self._att_s = 0.0
+        self.state = "attempt"
+        self.set_status("Planning failed - let's see what happens if the arm just tries anyway...", "warn")
+
+    def _attempt_pose(self, s):
+        path, cum = self.attempt.path, self._att_cum
+        i = min(int(np.searchsorted(cum, s, side="right") - 1), len(path) - 2)
+        t = (s - cum[i]) / max(cum[i + 1] - cum[i], 1e-12)
+        return path[i] + np.clip(t, 0.0, 1.0) * (path[i + 1] - path[i])
+
+    def _update_attempt(self, dt):
+        att, total = self.attempt, self._att_cum[-1]
+        step = dt * self.speed * cfg.JOINT_SPEED * cfg.ATTEMPT_SPEED_FACTOR
+        if self.attempt_phase == "out":
+            self._att_s = min(total, self._att_s + step)
+            self.q = self._attempt_pose(self._att_s)
+            if self._att_s >= total:
+                self.attempt_phase, self._att_timer = "oops", cfg.ATTEMPT_PAUSE
+                self.set_status(att.message + " Going back...", "error")
+        elif self.attempt_phase == "oops":
+            self._att_timer -= dt * self.speed
+            if self._att_timer <= 0:
+                self.attempt_phase = "back"
+        else:   # back to where the attempt started
+            self._att_s = max(0.0, self._att_s - step)
+            self.q = self._attempt_pose(self._att_s)
+            if self._att_s <= 0:
+                self.q = att.path[0].copy()
+                self.attempt = None
+                self.state = "failed"
+                self.set_status(f"{att.message} Back at the start. Planner: {self._att_reason}", "error")
+
+    def _abort_attempt(self):
+        """Stop a running attempt and put the arm back at its starting pose."""
+        if self.attempt is not None:
+            self.q = self.attempt.path[0].copy()
+            self.attempt = None
+            if self.state == "attempt":
+                self.state = "failed"
+
     def update(self, dt):
         self.poll_worker()
+        if self.state == "attempt" and self.attempt is not None:
+            self._update_attempt(dt)
+            return
         if self.state != "running":
             return
         steps = self.plan.steps
