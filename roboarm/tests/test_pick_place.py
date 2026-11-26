@@ -105,3 +105,33 @@ def test_joint_goal_mode():
     goal = np.radians([49.9, -26.3, -113.7])
     plan = TaskPlanner(arm, env, rng=np.random.default_rng(4)).plan_joint_goal(HOME, goal)
     assert plan.success and np.allclose(plan.moves[0].path[-1], goal)
+
+
+# --------------------------------------------------------------------------- IK comparison mode
+def test_first_mode_records_no_comparison(plan_and_world):
+    _, _, plan = plan_and_world
+    assert plan.ik_comparison == []                  # default behaviour unchanged
+
+
+def test_compare_mode_picks_cheapest_posture_per_phase():
+    robot, env = PlanarArm(), Environment.default()
+    home = np.radians(cfg.HOME_CONFIG_DEG)
+    plan = TaskPlanner(robot, env, rng=np.random.default_rng(0), ik_mode="compare").plan_pick_and_place(home)
+    assert plan.success, plan.message
+    phases = {r["phase"] for r in plan.ik_comparison}
+    assert phases == {"Transit to A", "Carry to B"}
+    for phase in phases:
+        rows = [r for r in plan.ik_comparison if r["phase"] == phase]
+        chosen = [r for r in rows if r["chosen"]]
+        assert len(chosen) == 1 and chosen[0]["success"]
+        ok = [r for r in rows if r["success"]]
+        assert chosen[0]["cost"] == min(r["cost"] for r in ok)
+        for r in ok:                                  # penalty never lowers the cost
+            assert r["cost"] >= r["length_rad"] - 1e-9
+            assert 0.0 <= r["min_singularity"] <= 1.0 + 1e-9
+    # only the chosen postures' search trees are kept for drawing
+    queries_kept = sum(1 for r in plan.ik_comparison if r["chosen"]) + 1     # + "Return home"
+    assert len(plan.trees) == 2 * queries_kept
+    # the chosen motion still ends at a valid grasp: plan is executable as before
+    kinds = [s.kind for s in plan.moves]
+    assert kinds[0] == "transit" and "carry" in kinds

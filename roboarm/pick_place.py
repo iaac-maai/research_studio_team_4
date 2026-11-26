@@ -15,7 +15,11 @@ Sequence (each move is a list of joint configurations):
 
 Inverse kinematics provides several candidate grasp poses (e.g. "elbow up"
 and "elbow down"); every candidate whose straight approach is collision-free
-becomes a goal for RRT-Connect, which simply uses whichever it reaches first.
+becomes a goal for RRT-Connect. With cfg.IK_SELECTION = "first" RRT-Connect
+simply uses whichever it reaches first. With "compare" each posture is planned
+separately, scored (smoothed joint-space length, optionally penalised for
+passing near a singularity) and the cheapest is kept; every posture's result is
+recorded in TaskPlan.ik_comparison.
 """
 import time
 from dataclasses import dataclass, field
@@ -57,6 +61,7 @@ class TaskPlan:
     trees: list = field(default_factory=list)    # [(nodes, parents, label, held)] for drawing
     metrics: dict = field(default_factory=dict)
     target_station: str = None
+    ik_comparison: list = field(default_factory=list)   # one dict per IK posture ("compare" mode)
 
     @property
     def moves(self):
@@ -70,7 +75,7 @@ class PlanningFailed(Exception):
 class TaskPlanner:
     def __init__(self, robot, env, max_iterations=cfg.MAX_ITERATIONS, rng=None,
                  cancel_event=None, shortcut_iterations=cfg.SHORTCUT_ITERATIONS,
-                 return_home=cfg.RETURN_HOME, backend=None):
+                 return_home=cfg.RETURN_HOME, backend=None, ik_mode=None, singularity_penalty=None):
         self.robot = robot
         self.env = env
         self.max_iterations = int(max_iterations)
@@ -84,6 +89,9 @@ class TaskPlanner:
         self._stats = {"iterations": 0, "nodes": 0, "rrt_time": 0.0, "queries": 0}
         self._checkers = []
         self._trees = []
+        self.ik_mode = ik_mode or cfg.IK_SELECTION
+        self.singularity_penalty = cfg.SINGULARITY_PENALTY if singularity_penalty is None else singularity_penalty
+        self._ik_comparison = []
 
     # ------------------------------------------------------------ helpers
     def _checker(self, env, held=None, gripper_closed=None, include_free_object=True,
@@ -120,6 +128,61 @@ class TaskPlanner:
             smooth = raw
         return smooth, raw, res.goal_index
 
+    def _rrt_select(self, start, goals, checker, label, held, fallback, station):
+        """Plan to one of the IK postures `goals` (see cfg.IK_SELECTION).
+
+        "first":   one RRT-Connect query with every posture as a goal.
+        "compare": one query per posture; the successful motion with the lowest
+                   cost is kept. cost = smoothed joint-space length (rad), times
+                   (1 + shortfall) when the motion's minimum singularity measure
+                   drops below SINGULARITY_THRESHOLD (penalty on). Only the chosen
+                   posture's search trees are kept for drawing.
+        """
+        if self.ik_mode != "compare":
+            return self._rrt(start, goals, checker, label, held, fallback)
+        from metrics import densify
+        thr = cfg.SINGULARITY_THRESHOLD
+        kept = len(self._trees)
+        rows, results = [], []
+        for k, goal in enumerate(goals):
+            n_trees, nodes0, t0 = len(self._trees), self._stats["nodes"], time.perf_counter()
+            try:
+                path, raw, _ = self._rrt(start, [goal], checker, label, held, fallback)
+                ok, msg = True, "ok"
+            except PlanningFailed as exc:
+                path = raw = None
+                ok, msg = False, str(exc).split(": ", 1)[-1]
+            row = {"phase": label, "station": station, "candidate": k + 1,
+                   "posture": self.robot.posture_label(goal), "success": ok, "message": msg,
+                   "time_s": time.perf_counter() - t0, "nodes": self._stats["nodes"] - nodes0,
+                   "chosen": False}
+            if ok:
+                sing = float(np.min(self.robot.singularity_measure(densify(path))))
+                length = path_length(path)
+                cost = length
+                if self.singularity_penalty and thr > 0:
+                    cost *= 1.0 + max(0.0, thr - sing) / thr
+                row.update(length_rad=length, raw_length_rad=path_length(raw),
+                           min_singularity=sing, cost=cost)
+            rows.append(row)
+            results.append((path, raw, self._trees[n_trees:]))
+        del self._trees[kept:]
+        for q, reason in getattr(self, "_rejected", []):   # postures that never reached the planner
+            rows.append({"phase": label, "station": station, "candidate": len(rows) + 1,
+                         "posture": self.robot.posture_label(q), "success": False,
+                         "message": "rejected before planning: " + reason, "time_s": 0.0,
+                         "nodes": 0, "chosen": False})
+        self._ik_comparison.extend(rows)
+        ok_ids = [i for i, r in enumerate(rows) if r["success"]]
+        if not ok_ids:
+            reasons = "; ".join(sorted({r["message"] for r in rows}))
+            raise PlanningFailed(f"{label}: no IK posture could be reached ({reasons})")
+        best = min(ok_ids, key=lambda i: rows[i]["cost"])
+        rows[best]["chosen"] = True
+        path, raw, trees = results[best]
+        self._trees.extend(trees)
+        return path, raw, best
+
     def _station_candidates(self, station, object_center, held_rel, q_seed,
                             down_checker, up_checker, what):
         """IK poses at a station plus their vertical approach paths.
@@ -138,17 +201,21 @@ class TaskPlanner:
                                  f"there within the joint limits (check link lengths).")
         lift = np.array([0.0, cfg.APPROACH_HEIGHT])
         candidates, reasons = [], []
+        self._rejected = []          # (posture at the station, reason) for the IK table
         for q in solutions:
             if not down_checker.is_valid(q):
                 reasons.append(self._describe_collision(down_checker, q))
+                self._rejected.append((q, "pose collides: " + reasons[-1]))
                 continue
             line = self.robot.cartesian_line(q, tcp_target + lift, tool_angle)
             if line is None:
                 reasons.append("no straight vertical approach")
+                self._rejected.append((q, reasons[-1]))
                 continue
             approach = line[::-1]
             if not (down_checker.path_valid(approach) and up_checker.path_valid(line)):
                 reasons.append("vertical approach blocked")
+                self._rejected.append((q, reasons[-1]))
                 continue
             candidates.append((line[-1], approach, line))
         if not candidates:
@@ -179,11 +246,12 @@ class TaskPlanner:
                 q_lifted = q_start
             self._plan_place(q_lifted, held, place, steps)
         except PlanningFailed as exc:
-            plan = TaskPlan(False, str(exc), steps, q_start, self._trees, target_station=place)
+            plan = TaskPlan(False, str(exc), steps, q_start, self._trees, target_station=place,
+                            ik_comparison=self._ik_comparison)
             plan.metrics = self._metrics(plan, time.perf_counter() - t0)
             return plan
         plan = TaskPlan(True, f"Plan found: pick-and-place to {place}.", steps, q_start, self._trees,
-                        target_station=place)
+                        target_station=place, ik_comparison=self._ik_comparison)
         plan.metrics = self._metrics(plan, time.perf_counter() - t0)
         return plan
 
@@ -203,8 +271,8 @@ class TaskPlanner:
         holding = self._checker(carrying_env, provisional)
         cands = self._station_candidates(pick, center, (np.zeros(2), 0.0), q_start,
                                          down_checker=empty, up_checker=holding, what="Grasp")
-        path, raw, k = self._rrt(q_start, [c[0] for c in cands], empty_free, f"Transit to {pick}",
-                                 None, fallback=empty)
+        path, raw, k = self._rrt_select(q_start, [c[0] for c in cands], empty_free, f"Transit to {pick}",
+                                        None, empty, pick)
         pre, approach, retreat = cands[k]
         # Exact object pose relative to the gripper at the grasp configuration.
         q_grasp = approach[-1]
@@ -234,8 +302,8 @@ class TaskPlanner:
         cands = self._station_candidates(place, target_center, (held.rel_pos, held.rel_angle), q_from,
                                          down_checker=holding, up_checker=released, what="Place")
         holding_free = self._checker(carrying_env, held, margin=cfg.PLANNING_MARGIN)
-        path, raw, k = self._rrt(q_from, [c[0] for c in cands], holding_free, f"Carry to {place}", held,
-                                 fallback=holding)
+        path, raw, k = self._rrt_select(q_from, [c[0] for c in cands], holding_free, f"Carry to {place}",
+                                        held, holding, place)
         pre, approach, retreat = cands[k]
         steps.append(Move("carry", f"Carry object to {place}", path, held, raw))
         steps.append(Move("approach", f"Lower object onto {place}", approach, held))

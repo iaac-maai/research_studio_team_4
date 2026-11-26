@@ -82,8 +82,12 @@ def test_dragging_obstacle_invalidates_and_replans_mid_task(sim):
 def test_link_length_change_and_failure_message(sim):
     sim.set_link_length(1, 0.6)
     plan_now(sim)
-    assert sim.state == "failed"
     assert "Planning failed" in sim.status
+    # a failed plan first shows the naive "try anyway" motion (SHOW_FAILED_ATTEMPT), then ends as failed
+    assert sim.state in ("failed", "attempt")
+    run_until(sim, lambda: sim.state != "attempt")
+    assert sim.state == "failed"
+    assert "out of reach" in sim.status          # the planner's reason is still reported
 
 
 def test_manual_jog_respects_limits(sim):
@@ -133,3 +137,64 @@ def test_render_smoke(sim):
     run_until(sim, lambda: sim.held is not None)
     r.draw(sim, widgets)
     pygame.quit()
+
+
+# --------------------------------------------------------------------------- link lengths
+def test_default_home_is_unchanged(sim):
+    home, adjusted = sim.safe_home()
+    assert not adjusted
+    assert np.allclose(home, np.radians(cfg.HOME_CONFIG_DEG))
+
+
+@pytest.mark.parametrize("index,length", [(1, 2.4), (0, 0.8), (2, 2.2)])
+def test_link_length_change_keeps_home_collision_free(sim, index, length):
+    """Regression: with these lengths the configured home pose collides with an obstacle.
+
+    Before the fix, Reset returned the arm to that colliding pose and planning
+    refused to start ("The arm's current pose is in collision").
+    """
+    sim.set_link_length(index, length)
+    assert sim.current_checker().is_valid(sim.q), sim.status   # idle arm moved with home
+    assert "home" in sim.status.lower()
+    sim.reset()
+    assert sim.current_checker().is_valid(sim.q)
+    assert np.allclose(sim.q, sim.home)
+
+
+def test_link_length_change_does_not_move_arm_mid_task(sim):
+    plan_now(sim)
+    sim.start_pause()
+    run_until(sim, lambda: sim.held is not None)
+    sim.start_pause()                         # pause while holding the box
+    q_before = sim.q.copy()
+    sim.set_link_length(1, 2.4)
+    assert np.allclose(sim.q, q_before)       # only home changes, not the paused arm
+    assert not sim.plan_valid
+
+
+# --------------------------------------------------------------------------- failed plan -> naive attempt
+def test_failed_plan_shows_attempt_then_returns_to_start(sim):
+    sim.set_link_length(1, 0.8)                # too short: planning fails at once
+    sim.reset()
+    start = sim.q.copy()
+    plan_now(sim)
+    assert sim.state == "attempt" and sim.attempt is not None
+    assert sim.attempt.outcome in ("crash", "unreachable", "reached")
+    run_until(sim, lambda: sim.attempt_phase == "oops")
+    assert sim.status.startswith("Oops")
+    if sim.attempt.outcome == "crash":
+        assert sim.current_report()["colliding"]           # drawn red at the impact pose
+    run_until(sim, lambda: sim.state != "attempt")
+    assert sim.state == "failed" and sim.attempt is None
+    assert np.allclose(sim.q, start)                       # back where it started
+
+
+def test_replanning_during_attempt_restores_start_pose(sim):
+    sim.set_link_length(1, 0.8)
+    sim.reset()
+    start = sim.q.copy()
+    plan_now(sim)
+    sim.update(0.3)                                        # partway through the attempt
+    sim.request_plan()                                     # aborts the attempt first
+    assert np.allclose(sim.q, start)
+    sim._worker.join()

@@ -208,6 +208,35 @@ class PlanarArm:
         r = p - pts[:-1]
         return np.vstack([-r[:, 1], r[:, 0], np.ones(self.n_joints)])
 
+    def singularity_measure(self, q):
+        """How far from a singularity: 0 = singular, larger = better conditioned.
+
+        sqrt(det(J J^T)) of the 3 x N pose Jacobian, divided by the product of
+        all link lengths except the last. For three joints J is square and
+        det(J) = L1 * L2 * sin(q2), so the measure is exactly |sin(q2)|: the arm
+        loses a direction of motion when the elbow is fully stretched or folded.
+        Works for a single q (returns a float) or a batch (B, N) -> (B,).
+        """
+        q = np.asarray(q, float)
+        Q = np.atleast_2d(q)
+        pts = self.forward_kinematics(Q)                   # (B, N+1, 2)
+        r = self.tcp(Q)[:, None, :] - pts[:, :-1, :]       # (B, N, 2)
+        J = np.stack([-r[..., 1], r[..., 0], np.ones(r.shape[:2])], axis=1)   # (B, 3, N)
+        det = np.linalg.det(J @ np.swapaxes(J, 1, 2))
+        w = np.sqrt(np.maximum(det, 0.0)) / np.prod(self.lengths[:-1])
+        return float(w[0]) if q.ndim == 1 else w
+
+    def posture_label(self, q):
+        """'elbow up' / 'elbow down': is the elbow above the shoulder-wrist line?"""
+        pts = self.forward_kinematics(np.asarray(q, float))
+        if self.n_joints < 3:
+            return "-"
+        base, elbow, wrist = pts[0], pts[1], pts[2]
+        a, b = wrist - base, elbow - base
+        side = a[0] * b[1] - a[1] * b[0]        # > 0: elbow left of the shoulder->wrist ray
+        up = side > 0 if a[0] >= 0 else side < 0
+        return "elbow up" if up else "elbow down"
+
     def solve_ik(self, target, angle, q_seed, max_iter=200, tol=1e-5, damping=0.05, max_step=0.2):
         """Damped-least-squares IK from one seed. Returns (q, converged)."""
         q = self.clip(np.asarray(q_seed, float).copy())
