@@ -1,0 +1,4 @@
+# roboarm_mujoco - physics version of roboarm (run everything from the repository root)
+mujoco>=3.2    # developed and tested with 4.0.1 (also installs glfw for the viewer)
+numpy
+pytest
