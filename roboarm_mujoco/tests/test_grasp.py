@@ -49,3 +49,24 @@ def test_opening_the_gripper_drops_the_box():
         s = sim.step(sim.target)
     assert not s["holding"]
     assert s["tcp"][1] - s["box_pos"][1] > 0.2
+
+
+def test_box_does_not_walk_along_the_fingers():
+    """Rotating the hand back and forth must not make the box creep along the
+    fingers (with MuJoCo's default soft contacts it moved ~2.8 mm per move)."""
+    from roboarm_mujoco.trajectory import drive
+    sim = _sim()
+    pick_up(sim)
+    drive(sim, [sim.get_state()["q"], sim.home], speed=0.2, settle_steps=50)
+    m, d = sim.model, sim.data
+    finger, box = m.body("finger_left").id, m.body("object").id
+
+    def along_finger():
+        return (d.xmat[finger].reshape(3, 3).T @ (d.xpos[box] - d.xpos[finger]))[0]
+
+    start = along_finger()
+    for target in [sim.home + np.radians([0, 0, 40]), sim.home] * 2:
+        for q in np.linspace(sim.get_state()["q"], target, 100):
+            sim.step(q)
+    assert sim.holding()
+    assert abs(along_finger() - start) < 0.003          # 4 moves: was ~11 mm, now ~1.6 mm

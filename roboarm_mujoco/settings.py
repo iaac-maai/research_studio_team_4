@@ -40,6 +40,14 @@ GRAVITY_COMPENSATION = True
 # --------------------------------------------------------------------------- #
 FRICTION = (1.0, 0.005, 0.0001)
 
+# Contact stiffness (MuJoCo solref: time constant s, damping ratio), applied to
+# every geom. MuJoCo contacts are slightly soft; with its default (0.02 s) the
+# box sinks ~1 mm into each finger, rocks a little at every arm motion and
+# "walks" ~4 cm along the fingers over one carry. 0.004 s (= 2 x TIMESTEP, the
+# stiffest value MuJoCo recommends) cuts that to ~4 mm. More grip force, more
+# friction or the no-slip solver did not help (measured 2026-11-28).
+CONTACT_SOLREF = (0.004, 1.0)
+
 # --------------------------------------------------------------------------- #
 # Joint motors: position servo (stiffness kp) + velocity servo (damping kv).
 # step() feeds the velocity servo the speed implied by consecutive targets,

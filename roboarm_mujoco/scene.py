@@ -226,6 +226,9 @@ def build_xml(layout, robot_margin=0.0, object_margin=0.0):
     <global azimuth="90" elevation="-5" offwidth="1280" offheight="720"/>
     <headlight ambient="0.45 0.45 0.45" diffuse="0.5 0.5 0.5"/>
   </visual>
+  <default>
+    <geom solref="{_f(*S.CONTACT_SOLREF)}"/>
+  </default>
   <statistic center="0 0 2.6" extent="6.5"/>
   <asset>
     <texture name="grid" type="2d" builtin="checker" rgb1="0.82 0.78 0.70" rgb2="0.76 0.72 0.64" width="300" height="300"/>

@@ -48,9 +48,10 @@ Options: `--layout FILE.csv`, `--seed N` (repeatable planning), `--speed F` (mot
 | [pick_place.py](pick_place.py) | `TaskPlanner` (the roboarm task sequence: transit, approach, grasp, lift, carry, lower, release, retreat, home) and `PlanExecutor` (plays a plan through `RobotSim.step()`). |
 | [trajectory.py](trajectory.py) | Turns a joint path into one target per control step. |
 | [main.py](main.py) | The viewer app and its keys. |
-| [settings.py](settings.py) | Physics-only parameters: masses, motor gains, grip force, friction, time step, depths. |
+| [benchmark.py](benchmark.py) | Plans and physically executes the task for many seeds without a window; prints a summary and saves a new CSV in `results/` (section 7). |
+| [settings.py](settings.py) | Physics-only parameters: masses, motor gains, grip force, friction, contact stiffness, time step, depths. |
 | [paths.py](paths.py) | The one place that puts `roboarm/` on `sys.path`. |
-| [tests/](tests/) | One file per step: scene, control, grasp, collision, API, planning, app. |
+| [tests/](tests/) | One file per step: scene, control, grasp, collision, API, planning, app, benchmark. |
 
 Not owned by this folder: `environments/` (layout CSVs and `layout.py`, environments person) and `rl/` (RL person).
 
@@ -127,6 +128,7 @@ Extra (not part of the contract):
 | Joint servos | kp = 60000, 25000, 4000; kv = 4000, 1500, 160 | About critically damped for the measured joint inertias (84, 18, 1.4 kg·m² stretched out). |
 | Gripper | Two sliding fingers, **mechanically coupled** (a joint-equality constraint between the two finger slides), position servos with force capped at **40 N each** | Coupling keeps the box centred, like a real parallel gripper. Nothing attaches the box to the gripper. |
 | Friction | μ = 1.0 (sliding), elliptic friction cones, `impratio = 10` | The usual MuJoCo settings for stable grasps. |
+| Contact stiffness | `solref = 0.004 1` on every geom (`CONTACT_SOLREF`; MuJoCo's default is 0.02) | With the default, the box sank ~1 mm into each finger, rocked at every motion and "walked" ~4 cm along the fingers during one carry. Stiffer contacts cut this about tenfold (see section 7). |
 | Box | Moves in the plane only (slide x, slide z, hinge about y) | It can slide, tip or fall, but not leave the 2D world. |
 
 **Holding by friction.** The box stays up while 2 × μ × grip force > weight + inertial forces. Here that is 2 × 1.0 × 40 N = 80 N against 9.8 N. With `sim.set_grip_force(2.0)` (4 N < 9.8 N), the box slips out (tested in `tests/test_grasp.py`).
@@ -152,7 +154,7 @@ New here:
 
 ---
 
-## 7. Measured results (this machine, not yet a benchmark)
+## 7. Measured results (this machine)
 
 Configuration:
 
@@ -176,7 +178,22 @@ Each seed ran once (2026-11-26/27):
 - One MuJoCo collision check takes about 50 µs, compared with about 8 µs for roboarm's vectorised checker. That is why planning is slower than roboarm's reported 2.2 s.
 - Seed 2's first run reported 10,736 s because the computer slept during planning (wall-clock timer). It was re-run and gave 7.2 s with the identical check count and path.
 
-These are three single runs, not a benchmark. Use more seeds and record them before comparing with RL.
+These are three single runs, made before the contact-stiffness change (that change does not affect planning).
+
+### Benchmark
+
+`python -m roboarm_mujoco.benchmark --runs 10 --seed 0` plans **and physically executes** the task once per seed (seeds 0–9, default layout, same planner settings and machine as above) and writes a new timestamped CSV to `results/` (existing files are never overwritten). "Slip" is how far the box moved in the hand between grasp and release.
+
+| | Contacts 0.02 (MuJoCo default), 2026-11-27 | Contacts 0.004, 2026-11-28 |
+|---|---|---|
+| Planning / task success | 10/10 / 10/10 | 10/10 / 10/10 |
+| Collisions during execution | 0 | 0 |
+| Max slip in the hand, mean (min–max) | 40 mm (25–47) | 7 mm (6–8) |
+| Final placement error, mean | 0.5 mm | 1.0 mm |
+| Joint path, smoothed, mean | 25.6 rad | 25.6 rad (identical paths) |
+| Planning time, mean | 7.6 s | 4.4 s |
+
+Results: `results/benchmark_20261127_124821.csv` and `results/benchmark_20261128_153714.csv`. Collision-check counts and paths are identical in both runs; the difference in planning time is laptop speed variation, not the contact change. The slip measure (box relative to the tool centre point) carries a few mm of measurement noise; measured against the finger itself, the slip on seed 0 dropped from 40.0 to 4.0 mm. Use more seeds and layouts before comparing with RL.
 
 ---
 
