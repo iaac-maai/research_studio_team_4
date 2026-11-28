@@ -34,12 +34,14 @@ from geometry import rotation             # roboarm/geometry.py
 PLACE_TOL = 0.05        # m: box centre within this distance of the planned place point
 UPRIGHT_TOL = np.radians(10)
 
-FIELDS = ["layout", "seed", "max_iterations", "grip_force_n",
+FIELDS = ["layout", "seed", "max_iterations", "grip_force_n", "speed",
           "plan_success", "task_success", "message",
           "planning_time_s", "rrt_time_s", "queries", "samples", "nodes", "collision_checks",
           "joint_path_rad", "raw_joint_path_rad", "tcp_path_m",
           "exec_sim_time_s", "collision_steps", "first_collision",
-          "lost_grip_steps", "max_slip_m", "max_slip_rad",  # slip = box drift in the hand while carried
+          # slip = how far the box moved in the hand while carried: max_slip_m / _rad relative to
+          # the tool centre point (a few mm of noise), max_slip_finger_m relative to the finger itself
+          "lost_grip_steps", "max_slip_m", "max_slip_rad", "max_slip_finger_m",
           "final_box_x", "final_box_y", "final_box_angle_rad", "place_error_m"]
 
 
@@ -64,42 +66,56 @@ def run_one(layout_csv, seed, max_iterations, grip_force=S.GRIP_FORCE, speed=1.0
                                     "tcp_path_m")}}
     if not plan.success:
         return row
+    row.update(execute(sim, plan, speed))
+    return row
 
-    # Execute; between "grasp settled" and "release" the box should stay fixed in the hand.
+
+def execute(sim, plan, speed=1.0):
+    """Play a successful plan on `sim` (physics) and measure the outcome.
+    Returns the execution columns of FIELDS plus task_success and message."""
+    m, d = sim.model, sim.data
+    finger, box = m.body("finger_left").id, m.body("object").id
+
+    def along_finger():                                   # box centre in the finger's frame
+        return d.xmat[finger].reshape(3, 3).T @ (d.xpos[box] - d.xpos[finger])
+
+    # Between "grasp" and "release" the box should stay fixed in the hand.
     ex = PlanExecutor(sim, plan, speed=speed)
     t_start = sim.time
     in_hand, ref = False, None
-    lost, slip_m, slip_rad = 0, 0.0, 0.0
+    lost, slip_m, slip_rad, slip_finger = 0, 0.0, 0.0, 0.0
     while not ex.done:
         kind, value, _ = ex.commands[ex.index]
         if kind == "grip" and not value:
             in_hand = False                                  # release command
         state = ex.tick()
         if kind == "grip" and value:
-            in_hand, ref = True, None                        # grasp command; reference set after settling
+            in_hand, ref = True, None                        # grasp command; reference set at first motion
         if in_hand and kind == "q":
             rel, ang = _hand_frame(state)
+            f = along_finger()
             if ref is None:
-                ref = (rel, ang)
+                ref = (rel, ang, f)
             slip_m = max(slip_m, float(np.linalg.norm(rel - ref[0])))
             dang = (ang - ref[1] + np.pi) % (2 * np.pi) - np.pi     # wrapped: 2*pi is no rotation
             slip_rad = max(slip_rad, abs(float(dang)))
+            slip_finger = max(slip_finger, float(np.linalg.norm(f - ref[2])))
             lost += not state["holding"]
 
     s = sim.get_state()
     rest = plan.place_center - [0.0, S.PLACE_DROP_GAP]           # released above the table, rests on it
     err = float(np.linalg.norm(s["box_pos"] - rest))
     ok = err < PLACE_TOL and abs(s["box_angle"]) < UPRIGHT_TOL and not ex.collisions
-    row.update(task_success=ok, exec_sim_time_s=sim.time - t_start,
+    out = dict(task_success=ok, speed=speed, exec_sim_time_s=sim.time - t_start,
                collision_steps=len(ex.collisions),
                first_collision=" / ".join("-".join(p) for p in ex.collisions[0][1][:2]) if ex.collisions else "",
-               lost_grip_steps=lost, max_slip_m=slip_m, max_slip_rad=slip_rad,
+               lost_grip_steps=lost, max_slip_m=slip_m, max_slip_rad=slip_rad, max_slip_finger_m=slip_finger,
                final_box_x=s["box_pos"][0], final_box_y=s["box_pos"][1],
-               final_box_angle_rad=s["box_angle"], place_error_m=err)
+               final_box_angle_rad=s["box_angle"], place_error_m=err, message=plan.message)
     if not ok:
-        row["message"] += " Execution failed: " + (
+        out["message"] += " Execution failed: " + (
             "collision." if ex.collisions else f"box {err:.3f} m from target.")
-    return row
+    return out
 
 
 def summarise(rows):
@@ -127,6 +143,7 @@ def main(argv=None):
     ap.add_argument("--layout", action="append", help="environment CSV (repeatable; default: config layout)")
     ap.add_argument("--max-iterations", type=int, default=rcfg.MAX_ITERATIONS)
     ap.add_argument("--grip-force", type=float, default=S.GRIP_FORCE, help="finger force limit, N")
+    ap.add_argument("--speed", type=float, default=1.0, help="motion speed factor (1 = config.JOINT_SPEED)")
     ap.add_argument("--out", help="output CSV (default: a new timestamped file in roboarm_mujoco/results/)")
     args = ap.parse_args(argv)
 
@@ -141,13 +158,13 @@ def main(argv=None):
     import mujoco
     print(f"MuJoCo {mujoco.__version__}, Python {platform.python_version()}, planner RRT-Connect, "
           f"max_iterations {args.max_iterations}, shortcut {rcfg.SHORTCUT_ITERATIONS}, "
-          f"margins {rcfg.PLANNING_MARGIN}/{rcfg.SAFETY_MARGIN} m, grip {args.grip_force} N")
+          f"margins {rcfg.PLANNING_MARGIN}/{rcfg.SAFETY_MARGIN} m, grip {args.grip_force} N, speed x{args.speed}")
     rows = []
     layouts = args.layout or [None]
     for layout in layouts:
         for k in range(args.runs):
             seed = args.seed + k
-            r = run_one(layout, seed, args.max_iterations, args.grip_force)
+            r = run_one(layout, seed, args.max_iterations, args.grip_force, args.speed)
             rows.append(r)
             tag = "ok  " if r["task_success"] else ("EXEC" if r["plan_success"] else "PLAN")
             extra = (f"  slip {r['max_slip_m'] * 1000:5.1f} mm  err {r['place_error_m'] * 1000:5.1f} mm"
